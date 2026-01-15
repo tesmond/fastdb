@@ -1,5 +1,5 @@
 use tauri::{command, Window};
-use crate::db::{self, QueryHistory};
+use crate::db::{self, QueryHistory, QueryHistoryEntry};
 use crate::credentials;
 use serde::{Deserialize, Serialize};
 use chrono::Utc;
@@ -122,16 +122,22 @@ pub async fn execute_query(server_id: String, sql: String) -> Result<QueryResult
         })
         .collect();
 
-    // Save to history
+    // Save to history (legacy table)
+    let now = Utc::now().timestamp();
     let history = QueryHistory {
         id: Uuid::new_v4().to_string(),
         server_id: server_id.clone(),
         sql: sql.clone(),
-        executed_at: Utc::now().timestamp(),
+        executed_at: now,
         success: 1,
     };
     if let Err(e) = db::add_query_history(&history) {
         eprintln!("Failed to save query history: {}", e);
+    }
+
+    // Save to deduplicated history (for UI)
+    if let Err(e) = db::upsert_query_history_dedup(&server_id, &sql, now) {
+        eprintln!("Failed to save deduplicated query history: {}", e);
     }
 
     Ok(QueryResult {
@@ -207,4 +213,46 @@ pub async fn add_server(server: db::Server, password: String) -> Result<(), Stri
     db::add_server(&server).map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+// ============================================================================
+// Deduplicated Query History Commands
+// ============================================================================
+
+/// Get deduplicated query history for a server (sorted by most recently executed)
+#[command]
+pub async fn get_query_history_dedup(
+    server_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<QueryHistoryEntry>, String> {
+    let limit = limit.unwrap_or(500);
+    db::get_query_history_dedup(&server_id, limit).map_err(|e| e.to_string())
+}
+
+/// Search query history with case-insensitive partial matching
+#[command]
+pub async fn search_query_history(
+    server_id: String,
+    search_term: String,
+    limit: Option<usize>,
+) -> Result<Vec<QueryHistoryEntry>, String> {
+    let limit = limit.unwrap_or(500);
+    if search_term.trim().is_empty() {
+        // If search term is empty, return all history
+        db::get_query_history_dedup(&server_id, limit).map_err(|e| e.to_string())
+    } else {
+        db::search_query_history_dedup(&server_id, &search_term, limit).map_err(|e| e.to_string())
+    }
+}
+
+/// Delete a specific query from history
+#[command]
+pub async fn delete_query_history_entry(entry_id: String) -> Result<(), String> {
+    db::delete_query_history_entry(&entry_id).map_err(|e| e.to_string())
+}
+
+/// Clear all query history for a server
+#[command]
+pub async fn clear_query_history(server_id: String) -> Result<(), String> {
+    db::clear_query_history_dedup(&server_id).map_err(|e| e.to_string())
 }

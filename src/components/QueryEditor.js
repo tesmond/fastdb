@@ -1,4 +1,4 @@
-import React, { useState, useCallback, memo } from 'react';
+import React, { useState, useCallback, useEffect, memo, useRef } from 'react';
 import {
   Box,
   TextField,
@@ -20,13 +20,33 @@ import {
 const QueryEditor = memo(({
   serverId,
   serverName,
+  initialSql = '',
   onExecute,
   onClear,
   onShowHistory,
   isExecuting = false
 }) => {
-  const [sql, setSql] = useState('');
+  const [sql, setSql] = useState(initialSql);
   const [rows, setRows] = useState(0);
+  const textFieldRef = useRef(null);
+
+  // Update SQL when initialSql changes (e.g., from history selection)
+  useEffect(() => {
+    if (initialSql) {
+      setSql(initialSql);
+      setRows(initialSql.split('\n').length);
+      // Move cursor to end of text
+      setTimeout(() => {
+        if (textFieldRef.current) {
+          const input = textFieldRef.current.querySelector('textarea');
+          if (input) {
+            input.focus();
+            input.setSelectionRange(initialSql.length, initialSql.length);
+          }
+        }
+      }, 0);
+    }
+  }, [initialSql]);
 
   const handleExecute = useCallback(async () => {
     if (!sql.trim() || !serverId) return;
@@ -170,7 +190,7 @@ const QueryEditor = memo(({
       </Box>
 
       {/* SQL Editor */}
-      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+      <Box ref={textFieldRef} sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         <TextField
           multiline
           fullWidth

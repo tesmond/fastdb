@@ -1,13 +1,15 @@
 import React, { useState, useCallback, memo } from "react";
-import { Box, Tabs, Tab, IconButton, Tooltip, Paper } from "@mui/material";
+import { Box, Tabs, Tab, IconButton, Tooltip, Paper, Drawer } from "@mui/material";
 import { Add, Close } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/tauri";
 import QueryEditor from "./QueryEditor";
 import ResultViewer from "./ResultViewer";
+import QueryHistory from "./QueryHistory";
 
 const RightPanel = memo(({ selectedServer }) => {
   const [tabs, setTabs] = useState([]);
   const [activeTab, setActiveTab] = useState(0);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // Create a new query tab
   const handleNewTab = useCallback(() => {
@@ -128,21 +130,42 @@ const RightPanel = memo(({ selectedServer }) => {
     );
   }, [activeTab]);
 
-  // Show query history
-  const handleShowHistory = useCallback(async () => {
-    const currentTab = tabs[activeTab];
-    if (!currentTab) return;
+  // Show query history panel
+  const handleShowHistory = useCallback(() => {
+    setHistoryOpen(true);
+  }, []);
 
-    try {
-      const history = await invoke("get_query_history", {
-        serverId: currentTab.serverId,
-      });
-      console.log("Query history:", history);
-      // TODO: Show history in a dialog or panel
-    } catch (error) {
-      console.error("Failed to load query history:", error);
-    }
-  }, [tabs, activeTab]);
+  // Close history panel
+  const handleCloseHistory = useCallback(() => {
+    setHistoryOpen(false);
+  }, []);
+
+  // Handle query selected from history - create new tab with the SQL
+  const handleSelectQueryFromHistory = useCallback((sql) => {
+    if (!selectedServer) return;
+
+    // Create a new tab with the selected SQL
+    const newTab = {
+      id: Date.now(),
+      serverId: selectedServer.id,
+      serverName: selectedServer.name,
+      sql: sql,
+      results: null,
+      error: null,
+      isExecuting: false,
+      executionTime: null,
+      rowsAffected: null,
+    };
+
+    setTabs((prev) => {
+      const newTabs = [...prev, newTab];
+      setActiveTab(newTabs.length - 1);
+      return newTabs;
+    });
+
+    // Close the history panel
+    setHistoryOpen(false);
+  }, [selectedServer]);
 
   const currentTab = tabs[activeTab];
 
@@ -263,8 +286,10 @@ const RightPanel = memo(({ selectedServer }) => {
             }}
           >
             <QueryEditor
+              key={currentTab.id}
               serverId={currentTab.serverId}
               serverName={currentTab.serverName}
+              initialSql={currentTab.sql}
               onExecute={handleExecute}
               onClear={handleClear}
               onShowHistory={handleShowHistory}
@@ -317,6 +342,25 @@ const RightPanel = memo(({ selectedServer }) => {
           )}
         </Box>
       )}
+
+      {/* Query History Drawer */}
+      <Drawer
+        anchor="right"
+        open={historyOpen}
+        onClose={handleCloseHistory}
+        PaperProps={{
+          sx: {
+            width: 400,
+            maxWidth: '90vw',
+          },
+        }}
+      >
+        <QueryHistory
+          serverId={selectedServer?.id}
+          onSelectQuery={handleSelectQueryFromHistory}
+          onClose={handleCloseHistory}
+        />
+      </Drawer>
     </Box>
   );
 });
