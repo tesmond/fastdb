@@ -56,7 +56,7 @@ FastDB is a desktop application built with Tauri and React that provides a moder
 ### Prerequisites
 - **Windows 10/11** (required for Credential Manager)
 - **Node.js** 18+ and npm 9+
-- **Rust** 1.70+ (install via [rustup](https://rustup.rs/))
+- **Rust** 1.85+ (install via [rustup](https://rustup.rs/))
 - **PostgreSQL** server(s) to connect to
 
 ### Installation
