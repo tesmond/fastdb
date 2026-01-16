@@ -1,6 +1,6 @@
 {
   "name": "fastdb",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,6 +13,7 @@
     "start": "npm run dev"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.0",
     "@codemirror/commands": "^6.10.1",
     "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/view": "^6.39.11",

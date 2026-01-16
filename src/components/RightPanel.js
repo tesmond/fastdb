@@ -1,7 +1,8 @@
-import React, { useState, useCallback, memo } from "react";
+import React, { useState, useCallback, memo, useEffect } from "react";
 import { Box, Tabs, Tab, IconButton, Tooltip, Paper, Drawer } from "@mui/material";
 import { Add, Close } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/tauri";
+import { listen } from "@tauri-apps/api/event";
 import QueryEditor from "./QueryEditor";
 import ResultViewer from "./ResultViewer";
 import QueryHistory from "./QueryHistory";
@@ -10,6 +11,42 @@ const RightPanel = memo(({ selectedServer }) => {
   const [tabs, setTabs] = useState([]);
   const [activeTab, setActiveTab] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [autocompleteItems, setAutocompleteItems] = useState({
+    tables: [],
+    columns: [],
+    indexes: [],
+  });
+
+  useEffect(() => {
+    let unlistenPromise;
+
+    const loadAutocomplete = async (serverId) => {
+      try {
+        const items = await invoke("get_autocomplete_items", { serverId });
+        setAutocompleteItems(items);
+      } catch (error) {
+        console.error("Failed to load autocomplete items:", error);
+      }
+    };
+
+    if (selectedServer?.id) {
+      loadAutocomplete(selectedServer.id);
+    } else {
+      setAutocompleteItems({ tables: [], columns: [], indexes: [] });
+    }
+
+    unlistenPromise = listen("schema_updated", (event) => {
+      if (event?.payload?.serverId === selectedServer?.id) {
+        loadAutocomplete(selectedServer.id);
+      }
+    });
+
+    return () => {
+      if (unlistenPromise) {
+        unlistenPromise.then((fn) => fn());
+      }
+    };
+  }, [selectedServer]);
 
   // Create a new query tab
   const handleNewTab = useCallback(() => {
@@ -334,6 +371,7 @@ const RightPanel = memo(({ selectedServer }) => {
               serverId={currentTab.serverId}
               serverName={currentTab.serverName}
               initialSql={currentTab.sql}
+              autocompleteItems={autocompleteItems}
               onExecute={handleExecute}
               onCancel={handleCancel}
               onClear={handleClear}

@@ -72,6 +72,13 @@ pub struct Index {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AutocompleteItems {
+    pub tables: Vec<String>,
+    pub columns: Vec<String>,
+    pub indexes: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct QueryHistory {
     pub id: String,
     pub server_id: String,
@@ -441,6 +448,51 @@ pub fn get_indexes(table_id: &str) -> Result<Vec<Index>, rusqlite::Error> {
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(indexes)
+}
+
+pub fn get_autocomplete_items(server_id: &str) -> Result<AutocompleteItems, rusqlite::Error> {
+    let conn = DB.lock().unwrap();
+
+    let mut tables_stmt = conn.prepare_cached(
+        "SELECT t.name
+         FROM tables t
+         JOIN schemas s ON s.id = t.schema_id
+         WHERE s.server_id = ?
+         ORDER BY t.name",
+    )?;
+    let tables = tables_stmt
+        .query_map([server_id], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+
+    let mut columns_stmt = conn.prepare_cached(
+        "SELECT c.name
+         FROM columns c
+         JOIN tables t ON t.id = c.table_id
+         JOIN schemas s ON s.id = t.schema_id
+         WHERE s.server_id = ?
+         ORDER BY c.name",
+    )?;
+    let columns = columns_stmt
+        .query_map([server_id], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+
+    let mut indexes_stmt = conn.prepare_cached(
+        "SELECT i.name
+         FROM indexes i
+         JOIN tables t ON t.id = i.table_id
+         JOIN schemas s ON s.id = t.schema_id
+         WHERE s.server_id = ?
+         ORDER BY i.name",
+    )?;
+    let indexes = indexes_stmt
+        .query_map([server_id], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+
+    Ok(AutocompleteItems {
+        tables,
+        columns,
+        indexes,
+    })
 }
 
 pub fn replace_indexes_for_table(

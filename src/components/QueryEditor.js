@@ -19,11 +19,14 @@ import CodeMirror from '@uiw/react-codemirror';
 import { sql as sqlLang } from '@codemirror/lang-sql';
 import { EditorView, keymap, placeholder } from '@codemirror/view';
 import { indentWithTab } from '@codemirror/commands';
+import { autocompletion, completeFromList } from '@codemirror/autocomplete';
+import { Prec } from '@codemirror/state';
 
 const QueryEditor = memo(({
   serverId,
   serverName,
   initialSql = '',
+  autocompleteItems = { tables: [], columns: [], indexes: [] },
   onExecute,
   onCancel,
   onClear,
@@ -77,22 +80,117 @@ const QueryEditor = memo(({
 
   const executeKeymap = useMemo(
     () =>
-      keymap.of([
-        {
-          key: 'Mod-Enter',
-          run: () => {
-            handleExecute();
-            return true;
+      Prec.highest(
+        keymap.of([
+          {
+            key: 'Mod-Enter',
+            run: () => {
+              handleExecute();
+              return true;
+            },
           },
-        },
-        indentWithTab,
-      ]),
+          {
+            key: 'Ctrl-Enter',
+            run: () => {
+              handleExecute();
+              return true;
+            },
+          },
+          {
+            key: 'Cmd-Enter',
+            run: () => {
+              handleExecute();
+              return true;
+            },
+          },
+          indentWithTab,
+        ]),
+      ),
     [handleExecute],
   );
 
   const editorPlaceholder = serverId
     ? "Enter SQL query here...\n\nExamples:\nSELECT * FROM table_name LIMIT 100;\nSHOW TABLES;"
     : 'Select a server to start querying';
+
+  const completionSource = useMemo(() => {
+    const items = [];
+
+    const sqlKeywords = [
+      'SELECT',
+      'FROM',
+      'WHERE',
+      'INSERT',
+      'INTO',
+      'UPDATE',
+      'DELETE',
+      'VALUES',
+      'SET',
+      'JOIN',
+      'LEFT',
+      'RIGHT',
+      'INNER',
+      'OUTER',
+      'FULL',
+      'ON',
+      'GROUP',
+      'BY',
+      'ORDER',
+      'LIMIT',
+      'OFFSET',
+      'HAVING',
+      'AS',
+      'DISTINCT',
+      'CREATE',
+      'TABLE',
+      'INDEX',
+      'DROP',
+      'ALTER',
+      'ADD',
+      'PRIMARY',
+      'KEY',
+      'FOREIGN',
+      'REFERENCES',
+      'UNION',
+      'ALL',
+      'EXISTS',
+      'CASE',
+      'WHEN',
+      'THEN',
+      'ELSE',
+      'END',
+      'LIKE',
+      'ILIKE',
+      'IS',
+      'NULL',
+      'NOT',
+      'AND',
+      'OR',
+      'TRUE',
+      'FALSE',
+      'RETURNING',
+      'WITH',
+      'EXPLAIN',
+      'ANALYZE',
+      'SHOW',
+    ];
+
+    sqlKeywords.forEach((keyword) => {
+      items.push({ label: keyword, type: 'keyword', info: 'SQL keyword' });
+    });
+
+    autocompleteItems.tables.forEach((name) => {
+      items.push({ label: name, type: 'table', info: 'table' });
+    });
+    autocompleteItems.columns.forEach((name) => {
+      items.push({ label: name, type: 'property', info: 'column' });
+    });
+    autocompleteItems.indexes.forEach((name) => {
+      items.push({ label: name, type: 'keyword', info: 'index' });
+    });
+
+    return completeFromList(items);
+  }, [autocompleteItems]);
 
   return (
     <Paper
@@ -195,6 +293,7 @@ const QueryEditor = memo(({
             EditorView.lineWrapping,
             executeKeymap,
             placeholder(editorPlaceholder),
+            autocompletion({ override: [completionSource] }),
             EditorView.editable.of(Boolean(serverId) && !isExecuting),
             EditorView.theme({
               '&': {

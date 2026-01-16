@@ -309,6 +309,11 @@ pub async fn get_indexes(table_id: String) -> Result<Vec<db::Index>, String> {
 }
 
 #[command]
+pub async fn get_autocomplete_items(server_id: String) -> Result<db::AutocompleteItems, String> {
+    db::get_autocomplete_items(&server_id).map_err(|e| e.to_string())
+}
+
+#[command]
 pub async fn add_server(server: db::Server, password: String) -> Result<(), String> {
     // Store password in credential manager
     credentials::store_password(&server.credential_key, &server.username, &password)

@@ -33,6 +33,7 @@ async fn main() {
             commands::get_tables,
             commands::get_columns,
             commands::get_indexes,
+            commands::get_autocomplete_items,
             commands::add_server,
             commands::get_query_history_dedup,
             commands::search_query_history,
