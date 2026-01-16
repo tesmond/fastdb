@@ -135,12 +135,6 @@ npm run tauri build
 
 ## 🛣️ Roadmap
 
-### Phase 4 (Next)
-- [X] Query history UI with search
-- [X] Stop/cancel running queries
-- [X] Syntax highlighting (Monaco/CodeMirror)
-- [ ] Auto-complete (tables, columns, keywords)
-
 ### Phase 5 (Future)
 - [ ] Server management UI (add/edit/delete)
 - [ ] Saved queries with folders
@@ -205,7 +199,7 @@ MIT License - see [LICENSE](LICENSE) file for details
 - ✅ Phase 3: Frontend UI (Complete)
 - 🚧 Phase 4: Advanced Features (In Progress)
 
-**Current Version:** 0.1.0  
+**Current Version:** 0.2.0  
 **Status:** Beta  
 **Last Updated:** 2026
 
