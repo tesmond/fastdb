@@ -49,6 +49,30 @@ pub enum QueryExecutionResult {
     Affected(u64),
 }
 
+fn strip_leading_comments(sql: &str) -> &str {
+    let mut remaining = sql;
+    loop {
+        let trimmed = remaining.trim_start();
+        if trimmed.starts_with("--") {
+            if let Some(pos) = trimmed.find('\n') {
+                remaining = &trimmed[pos + 1..];
+                continue;
+            }
+            return "";
+        }
+
+        if trimmed.starts_with("/*") {
+            if let Some(end) = trimmed.find("*/") {
+                remaining = &trimmed[end + 2..];
+                continue;
+            }
+            return "";
+        }
+
+        return trimmed;
+    }
+}
+
 pub async fn execute_query(
     server_id: &str,
     host: &str,
@@ -75,7 +99,7 @@ pub async fn execute_query(
         tokens.insert(id.to_string(), client.cancel_token());
     }
 
-    let trimmed = sql.trim_start().to_lowercase();
+    let trimmed = strip_leading_comments(sql).to_lowercase();
     let is_query = trimmed.starts_with("select") || trimmed.starts_with("with") || trimmed.starts_with("show") || trimmed.starts_with("explain");
 
     let result = if is_query {

@@ -136,9 +136,9 @@ npm run tauri build
 ## 🛣️ Roadmap
 
 ### Phase 4 (Next)
-- [ ] Query history UI with search
-- [ ] Stop/cancel running queries
-- [ ] Syntax highlighting (Monaco/CodeMirror)
+- [X] Query history UI with search
+- [X] Stop/cancel running queries
+- [X] Syntax highlighting (Monaco/CodeMirror)
 - [ ] Auto-complete (tables, columns, keywords)
 
 ### Phase 5 (Future)

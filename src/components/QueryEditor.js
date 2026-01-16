@@ -1,7 +1,6 @@
-import React, { useState, useCallback, useEffect, memo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, memo, useRef, useMemo } from 'react';
 import {
   Box,
-  TextField,
   Button,
   IconButton,
   Tooltip,
@@ -16,6 +15,10 @@ import {
   History,
   Save,
 } from '@mui/icons-material';
+import CodeMirror from '@uiw/react-codemirror';
+import { sql as sqlLang } from '@codemirror/lang-sql';
+import { EditorView, keymap, placeholder } from '@codemirror/view';
+import { indentWithTab } from '@codemirror/commands';
 
 const QueryEditor = memo(({
   serverId,
@@ -30,7 +33,7 @@ const QueryEditor = memo(({
 }) => {
   const [sql, setSql] = useState(initialSql);
   const [rows, setRows] = useState(0);
-  const textFieldRef = useRef(null);
+  const editorViewRef = useRef(null);
 
   // Update SQL when initialSql changes (e.g., from history selection)
   useEffect(() => {
@@ -39,13 +42,13 @@ const QueryEditor = memo(({
       setRows(initialSql.split('\n').length);
       // Move cursor to end of text
       setTimeout(() => {
-        if (textFieldRef.current) {
-          const input = textFieldRef.current.querySelector('textarea');
-          if (input) {
-            input.focus();
-            input.setSelectionRange(initialSql.length, initialSql.length);
-          }
-        }
+        const view = editorViewRef.current;
+        if (!view) return;
+        view.focus();
+        view.dispatch({
+          selection: { anchor: view.state.doc.length },
+          scrollIntoView: true,
+        });
       }, 0);
     }
   }, [initialSql]);
@@ -66,32 +69,30 @@ const QueryEditor = memo(({
     if (onClear) onClear();
   }, [onClear]);
 
-  const handleKeyDown = useCallback((e) => {
-    // Ctrl+Enter or Cmd+Enter to execute
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault();
-      handleExecute();
-    }
-    // Tab key inserts 2 spaces instead of leaving field
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const start = e.target.selectionStart;
-      const end = e.target.selectionEnd;
-      const newValue = sql.substring(0, start) + '  ' + sql.substring(end);
-      setSql(newValue);
-      // Set cursor position after the inserted spaces
-      setTimeout(() => {
-        e.target.selectionStart = e.target.selectionEnd = start + 2;
-      }, 0);
-    }
-  }, [sql, handleExecute]);
-
-  const handleChange = useCallback((e) => {
-    const value = e.target.value;
+  const handleChange = useCallback((value) => {
     setSql(value);
     // Count approximate rows (lines)
     setRows(value.split('\n').length);
   }, []);
+
+  const executeKeymap = useMemo(
+    () =>
+      keymap.of([
+        {
+          key: 'Mod-Enter',
+          run: () => {
+            handleExecute();
+            return true;
+          },
+        },
+        indentWithTab,
+      ]),
+    [handleExecute],
+  );
+
+  const editorPlaceholder = serverId
+    ? "Enter SQL query here...\n\nExamples:\nSELECT * FROM table_name LIMIT 100;\nSHOW TABLES;"
+    : 'Select a server to start querying';
 
   return (
     <Paper
@@ -185,42 +186,30 @@ const QueryEditor = memo(({
       </Box>
 
       {/* SQL Editor */}
-      <Box ref={textFieldRef} sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        <TextField
-          multiline
-          fullWidth
-          variant="outlined"
-          placeholder={
-            serverId
-              ? "Enter SQL query here...\n\nExamples:\nSELECT * FROM table_name LIMIT 100;\nSHOW TABLES;"
-              : "Select a server to start querying"
-          }
+      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        <CodeMirror
           value={sql}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          disabled={!serverId || isExecuting}
-          sx={{
-            flex: 1,
-            '& .MuiOutlinedInput-root': {
-              height: '100%',
-              alignItems: 'flex-start',
-              fontFamily: '"Fira Code", "Consolas", "Monaco", monospace',
-              fontSize: '13px',
-              lineHeight: 1.6,
-              '& fieldset': {
-                border: 'none',
+          height="100%"
+          extensions={[
+            sqlLang(),
+            EditorView.lineWrapping,
+            executeKeymap,
+            placeholder(editorPlaceholder),
+            EditorView.editable.of(Boolean(serverId) && !isExecuting),
+            EditorView.theme({
+              '&': {
+                height: '100%',
+                fontFamily: '"Fira Code", "Consolas", "Monaco", monospace',
+                fontSize: '13px',
+                lineHeight: 1.6,
               },
-            },
-            '& .MuiInputBase-input': {
-              height: '100% !important',
-              overflow: 'auto !important',
-              padding: 2,
-            },
-          }}
-          InputProps={{
-            sx: {
-              height: '100%',
-            },
+              '.cm-scroller': { overflow: 'auto' },
+              '.cm-content': { padding: '16px' },
+            }),
+          ]}
+          onChange={handleChange}
+          onCreateEditor={(view) => {
+            editorViewRef.current = view;
           }}
         />
       </Box>
