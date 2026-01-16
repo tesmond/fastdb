@@ -135,7 +135,7 @@ npm run tauri build
 
 ## 🛣️ Roadmap
 
-### Phase 5 (Future)
+### Phase 5 (Management)
 - [ ] Server management UI (add/edit/delete)
 - [ ] Saved queries with folders
 - [ ] Advanced filtering (type-specific)
@@ -197,7 +197,8 @@ MIT License - see [LICENSE](LICENSE) file for details
 - ✅ Phase 1: Architecture & Design (Complete)
 - ✅ Phase 2: Backend Core (Complete)
 - ✅ Phase 3: Frontend UI (Complete)
-- 🚧 Phase 4: Advanced Features (In Progress)
+- ✅ Phase 4: Advanced Features (Complete)
+- 🚧 Phase 5: Management (In Progress)
 
 **Current Version:** 0.2.0  
 **Status:** Beta  
