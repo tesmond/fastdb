@@ -35,7 +35,7 @@ pub async fn get_or_create_pool(
         recycling_method: RecyclingMethod::Fast,
     });
     cfg.pool = Some(PoolConfig {
-        max_size: 2,
+        max_size: 10,
         timeouts: deadpool_postgres::Timeouts::default(),
     });
 
@@ -56,8 +56,13 @@ pub async fn execute_query(
 ) -> Result<Vec<tokio_postgres::Row>, Box<dyn std::error::Error>> {
     // Ensure pool exists
     get_or_create_pool(server_id, host, port, user, password, dbname).await?;
-    let pools = POOLS.lock().await;
-    let pool = pools.get(server_id).ok_or("Pool not found for this server")?;
+    let pool = {
+        let pools = POOLS.lock().await;
+        pools
+            .get(server_id)
+            .cloned()
+            .ok_or("Pool not found for this server")?
+    };
     let client = pool.get().await?;
 
     if let Some(id) = query_id {
