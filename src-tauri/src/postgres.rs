@@ -1,11 +1,14 @@
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime, PoolConfig};
-use tokio_postgres::NoTls;
+use tokio_postgres::{NoTls, CancelToken};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::time::Duration;
 
 static POOLS: once_cell::sync::Lazy<Arc<Mutex<HashMap<String, Pool>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+static CANCEL_TOKENS: once_cell::sync::Lazy<Arc<Mutex<HashMap<String, CancelToken>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 pub async fn get_or_create_pool(
@@ -49,14 +52,42 @@ pub async fn execute_query(
     password: &str,
     dbname: &str,
     sql: &str,
+    query_id: Option<&str>,
 ) -> Result<Vec<tokio_postgres::Row>, Box<dyn std::error::Error>> {
     // Ensure pool exists
     get_or_create_pool(server_id, host, port, user, password, dbname).await?;
     let pools = POOLS.lock().await;
     let pool = pools.get(server_id).ok_or("Pool not found for this server")?;
     let client = pool.get().await?;
-    let rows = client.query(sql, &[]).await?;
-    Ok(rows)
+
+    if let Some(id) = query_id {
+        let mut tokens = CANCEL_TOKENS.lock().await;
+        tokens.insert(id.to_string(), client.cancel_token());
+    }
+
+    let result = client.query(sql, &[]).await;
+
+    if let Some(id) = query_id {
+        let mut tokens = CANCEL_TOKENS.lock().await;
+        tokens.remove(id);
+    }
+
+    Ok(result?)
+}
+
+pub async fn cancel_query(query_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let token = {
+        let tokens = CANCEL_TOKENS.lock().await;
+        tokens.get(query_id).cloned()
+    };
+
+    match token {
+        Some(token) => {
+            token.cancel_query(NoTls).await?;
+            Ok(())
+        }
+        None => Err("No running query for this id".into()),
+    }
 }
 
 pub async fn cleanup_idle_pools() {

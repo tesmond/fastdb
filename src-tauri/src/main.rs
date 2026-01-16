@@ -26,6 +26,7 @@ async fn main() {
             commands::get_cached_servers,
             commands::connect_to_server,
             commands::execute_query,
+            commands::cancel_query,
             commands::get_schema_tree,
             commands::refresh_schema,
             commands::get_query_history,

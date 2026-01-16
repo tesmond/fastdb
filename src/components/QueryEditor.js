@@ -22,9 +22,11 @@ const QueryEditor = memo(({
   serverName,
   initialSql = '',
   onExecute,
+  onCancel,
   onClear,
   onShowHistory,
-  isExecuting = false
+  isExecuting = false,
+  isCancelling = false
 }) => {
   const [sql, setSql] = useState(initialSql);
   const [rows, setRows] = useState(0);
@@ -149,7 +151,8 @@ const QueryEditor = memo(({
               <IconButton
                 size="small"
                 color="error"
-                disabled={!isExecuting}
+                onClick={onCancel}
+                disabled={!isExecuting || isCancelling}
               >
                 <Stop />
               </IconButton>

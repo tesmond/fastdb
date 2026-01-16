@@ -53,7 +53,11 @@ pub async fn connect_to_server(server_id: String) -> Result<String, String> {
 }
 
 #[command]
-pub async fn execute_query(server_id: String, sql: String) -> Result<QueryResult, String> {
+pub async fn execute_query(
+    server_id: String,
+    sql: String,
+    query_id: Option<String>,
+) -> Result<QueryResult, String> {
     let server = db::get_server_by_id(&server_id)
         .map_err(|e| e.to_string())?
         .ok_or("Server not found")?;
@@ -61,7 +65,16 @@ pub async fn execute_query(server_id: String, sql: String) -> Result<QueryResult
     let password = credentials::retrieve_password(&server.credential_key)
         .map_err(|e| format!("Failed to retrieve password: {}", e))?;
 
-    let rows = crate::postgres::execute_query(&server.id, &server.host, server.port as u16, &server.username, &password, &server.database, &sql)
+    let rows = crate::postgres::execute_query(
+        &server.id,
+        &server.host,
+        server.port as u16,
+        &server.username,
+        &password,
+        &server.database,
+        &sql,
+        query_id.as_deref(),
+    )
         .await
         .map_err(|e| {
             // Format database errors in a human-readable way
@@ -167,6 +180,13 @@ pub async fn execute_query(server_id: String, sql: String) -> Result<QueryResult
         rows: json_rows,
         rows_affected: Some(rows.len()),
     })
+}
+
+#[command]
+pub async fn cancel_query(query_id: String) -> Result<(), String> {
+    crate::postgres::cancel_query(&query_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[command]

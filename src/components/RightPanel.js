@@ -23,6 +23,8 @@ const RightPanel = memo(({ selectedServer }) => {
       results: null,
       error: null,
       isExecuting: false,
+      isCancelling: false,
+      queryId: null,
       executionTime: null,
       rowsAffected: null,
     };
@@ -63,11 +65,19 @@ const RightPanel = memo(({ selectedServer }) => {
       const currentTab = tabs[activeTab];
       if (!currentTab || !sql.trim()) return;
 
+      const queryId = `${currentTab.id}-${Date.now()}`;
+
       // Update tab state to executing
       setTabs((prev) =>
         prev.map((tab, index) =>
           index === activeTab
-            ? { ...tab, isExecuting: true, error: null }
+            ? {
+                ...tab,
+                isExecuting: true,
+                isCancelling: false,
+                error: null,
+                queryId,
+              }
             : tab,
         ),
       );
@@ -78,6 +88,7 @@ const RightPanel = memo(({ selectedServer }) => {
         const result = await invoke("execute_query", {
           serverId: currentTab.serverId,
           sql: sql.trim(),
+          queryId,
         });
 
         const executionTime = Date.now() - startTime;
@@ -92,6 +103,8 @@ const RightPanel = memo(({ selectedServer }) => {
                   results: result,
                   error: null,
                   isExecuting: false,
+                  isCancelling: false,
+                  queryId: null,
                   executionTime,
                   rowsAffected: result?.rowsAffected || null,
                 }
@@ -100,6 +113,10 @@ const RightPanel = memo(({ selectedServer }) => {
         );
       } catch (error) {
         const executionTime = Date.now() - startTime;
+        const errorMessage = error?.toString?.() || String(error);
+        const isCanceled =
+          errorMessage.includes("57014") ||
+          errorMessage.toLowerCase().includes("canceling statement due to user request");
 
         // Update tab with error
         setTabs((prev) =>
@@ -109,8 +126,12 @@ const RightPanel = memo(({ selectedServer }) => {
                   ...tab,
                   sql,
                   results: null,
-                  error: `Error executing query:\n${sql}\n\n${error.toString()}`,
+                  error: isCanceled
+                    ? "Query canceled."
+                    : `Error executing query:\n${sql}\n\n${errorMessage}`,
                   isExecuting: false,
+                  isCancelling: false,
+                  queryId: null,
                   executionTime,
                 }
               : tab,
@@ -120,6 +141,27 @@ const RightPanel = memo(({ selectedServer }) => {
     },
     [tabs, activeTab],
   );
+
+  const handleCancel = useCallback(async () => {
+    const currentTab = tabs[activeTab];
+    if (!currentTab?.queryId) return;
+
+    setTabs((prev) =>
+      prev.map((tab, index) =>
+        index === activeTab ? { ...tab, isCancelling: true } : tab,
+      ),
+    );
+
+    try {
+      await invoke("cancel_query", { queryId: currentTab.queryId });
+    } catch (error) {
+      setTabs((prev) =>
+        prev.map((tab, index) =>
+          index === activeTab ? { ...tab, isCancelling: false } : tab,
+        ),
+      );
+    }
+  }, [tabs, activeTab]);
 
   // Clear results for current tab
   const handleClear = useCallback(() => {
@@ -153,6 +195,8 @@ const RightPanel = memo(({ selectedServer }) => {
       results: null,
       error: null,
       isExecuting: false,
+      isCancelling: false,
+      queryId: null,
       executionTime: null,
       rowsAffected: null,
     };
@@ -291,9 +335,11 @@ const RightPanel = memo(({ selectedServer }) => {
               serverName={currentTab.serverName}
               initialSql={currentTab.sql}
               onExecute={handleExecute}
+              onCancel={handleCancel}
               onClear={handleClear}
               onShowHistory={handleShowHistory}
               isExecuting={currentTab.isExecuting}
+              isCancelling={currentTab.isCancelling}
             />
           </Box>
 
