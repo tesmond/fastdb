@@ -1,4 +1,4 @@
-use crate::db::{self, Schema, Table, Column};
+use crate::db::{self, Schema, Table, Column, Index};
 use crate::postgres;
 use uuid::Uuid;
 use chrono::Utc;
@@ -25,6 +25,7 @@ pub async fn refresh_schema_for_server(
     let mut schemas_to_insert = Vec::new();
     let mut tables_to_insert = Vec::new();
     let mut columns_to_insert = Vec::new();
+    let mut indexes_to_insert = Vec::new();
 
     // Fetch schemas
     let schema_rows = client
@@ -82,6 +83,25 @@ pub async fn refresh_schema_for_server(
                     nullable,
                 });
             }
+
+            // Fetch indexes for this table
+            let index_rows = client
+                .query(
+                    "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = $2",
+                    &[&schema_name, &table_name],
+                )
+                .await?;
+            for index_row in index_rows {
+                let index_name: String = index_row.get(0);
+                let index_def: String = index_row.get(1);
+                let index_id = Uuid::new_v4().to_string();
+                indexes_to_insert.push(Index {
+                    id: index_id,
+                    table_id: table_id.clone(),
+                    name: index_name,
+                    definition: index_def,
+                });
+            }
         }
     }
 
@@ -91,6 +111,7 @@ pub async fn refresh_schema_for_server(
         &schemas_to_insert,
         &tables_to_insert,
         &columns_to_insert,
+        &indexes_to_insert,
     )?;
 
     Ok(())

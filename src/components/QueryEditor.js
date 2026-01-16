@@ -181,14 +181,6 @@ const QueryEditor = memo(({
             </IconButton>
           </Tooltip>
 
-          <Tooltip title="Save query">
-            <IconButton
-              size="small"
-              disabled={!sql.trim()}
-            >
-              <Save />
-            </IconButton>
-          </Tooltip>
         </Box>
       </Box>
 

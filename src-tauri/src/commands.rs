@@ -246,6 +246,62 @@ pub async fn get_columns(table_id: String) -> Result<Vec<db::Column>, String> {
 }
 
 #[command]
+pub async fn get_indexes(table_id: String) -> Result<Vec<db::Index>, String> {
+    let cached = db::get_indexes(&table_id).map_err(|e| e.to_string())?;
+    if !cached.is_empty() {
+        return Ok(cached);
+    }
+
+    let context = db::get_table_context(&table_id).map_err(|e| e.to_string())?;
+    let Some((table_name, schema_name, server_id)) = context else {
+        return Ok(vec![]);
+    };
+
+    let server = db::get_server_by_id(&server_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Server not found")?;
+
+    let password = credentials::retrieve_password(&server.credential_key)
+        .map_err(|e| format!("Failed to retrieve password: {}", e))?;
+
+    let pool = crate::postgres::get_or_create_pool(
+        &server.id,
+        &server.host,
+        server.port as u16,
+        &server.username,
+        &password,
+        &server.database,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let client = pool.get().await.map_err(|e| e.to_string())?;
+    let rows = client
+        .query(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = $2",
+            &[&schema_name, &table_name],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut indexes: Vec<db::Index> = Vec::new();
+    for row in rows {
+        let name: String = row.get(0);
+        let definition: String = row.get(1);
+        indexes.push(db::Index {
+            id: Uuid::new_v4().to_string(),
+            table_id: table_id.clone(),
+            name,
+            definition,
+        });
+    }
+
+    db::replace_indexes_for_table(&table_id, &indexes).map_err(|e| e.to_string())?;
+
+    Ok(indexes)
+}
+
+#[command]
 pub async fn add_server(server: db::Server, password: String) -> Result<(), String> {
     // Store password in credential manager
     credentials::store_password(&server.credential_key, &server.username, &password)
