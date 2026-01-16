@@ -44,6 +44,11 @@ pub async fn get_or_create_pool(
     Ok(pool)
 }
 
+pub enum QueryExecutionResult {
+    Rows(Vec<tokio_postgres::Row>),
+    Affected(u64),
+}
+
 pub async fn execute_query(
     server_id: &str,
     host: &str,
@@ -53,7 +58,7 @@ pub async fn execute_query(
     dbname: &str,
     sql: &str,
     query_id: Option<&str>,
-) -> Result<Vec<tokio_postgres::Row>, Box<dyn std::error::Error>> {
+) -> Result<QueryExecutionResult, Box<dyn std::error::Error>> {
     // Ensure pool exists
     get_or_create_pool(server_id, host, port, user, password, dbname).await?;
     let pool = {
@@ -70,14 +75,23 @@ pub async fn execute_query(
         tokens.insert(id.to_string(), client.cancel_token());
     }
 
-    let result = client.query(sql, &[]).await;
+    let trimmed = sql.trim_start().to_lowercase();
+    let is_query = trimmed.starts_with("select") || trimmed.starts_with("with") || trimmed.starts_with("show") || trimmed.starts_with("explain");
+
+    let result = if is_query {
+        let rows = client.query(sql, &[]).await?;
+        QueryExecutionResult::Rows(rows)
+    } else {
+        let affected = client.execute(sql, &[]).await?;
+        QueryExecutionResult::Affected(affected)
+    };
 
     if let Some(id) = query_id {
         let mut tokens = CANCEL_TOKENS.lock().await;
         tokens.remove(id);
     }
 
-    Ok(result?)
+    Ok(result)
 }
 
 pub async fn cancel_query(query_id: &str) -> Result<(), Box<dyn std::error::Error>> {

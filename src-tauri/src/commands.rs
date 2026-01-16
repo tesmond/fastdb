@@ -65,7 +65,7 @@ pub async fn execute_query(
     let password = credentials::retrieve_password(&server.credential_key)
         .map_err(|e| format!("Failed to retrieve password: {}", e))?;
 
-    let rows = crate::postgres::execute_query(
+    let exec_result = crate::postgres::execute_query(
         &server.id,
         &server.host,
         server.port as u16,
@@ -86,76 +86,83 @@ pub async fn execute_query(
             format!("Error: {}", e)
         })?;
 
-    // Extract column information
-    let columns = if !rows.is_empty() {
-        rows[0]
-            .columns()
-            .iter()
-            .map(|col: &tokio_postgres::Column| ColumnInfo {
-                name: col.name().to_string(),
-                type_: Some(format!("{:?}", col.type_())),
-            })
-            .collect()
-    } else {
-        vec![]
-    };
+    let (columns, json_rows, rows_affected) = match exec_result {
+        crate::postgres::QueryExecutionResult::Rows(rows) => {
+            let columns = if !rows.is_empty() {
+                rows[0]
+                    .columns()
+                    .iter()
+                    .map(|col: &tokio_postgres::Column| ColumnInfo {
+                        name: col.name().to_string(),
+                        type_: Some(format!("{:?}", col.type_())),
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
 
-    // Convert rows to JSON
-    let json_rows: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|row: &tokio_postgres::Row| {
-            let mut map = serde_json::Map::new();
-            for (idx, col) in row.columns().iter().enumerate() {
-                let value: serde_json::Value = match col.type_().name() {
-                    "void" => serde_json::Value::Null,
-                    "int4" => row
-                        .try_get::<_, Option<i32>>(idx)
-                        .ok()
-                        .flatten()
-                        .map(|v: i32| v.into())
-                        .unwrap_or(serde_json::Value::Null),
-                    "int8" => row
-                        .try_get::<_, Option<i64>>(idx)
-                        .ok()
-                        .flatten()
-                        .map(|v: i64| v.into())
-                        .unwrap_or(serde_json::Value::Null),
-                    "float4" => row
-                        .try_get::<_, Option<f32>>(idx)
-                        .ok()
-                        .flatten()
-                        .map(|v: f32| v.into())
-                        .unwrap_or(serde_json::Value::Null),
-                    "float8" => row
-                        .try_get::<_, Option<f64>>(idx)
-                        .ok()
-                        .flatten()
-                        .map(|v: f64| v.into())
-                        .unwrap_or(serde_json::Value::Null),
-                    "bool" => row
-                        .try_get::<_, Option<bool>>(idx)
-                        .ok()
-                        .flatten()
-                        .map(|v: bool| v.into())
-                        .unwrap_or(serde_json::Value::Null),
-                    "text" | "varchar" => row
-                        .try_get::<_, Option<String>>(idx)
-                        .ok()
-                        .flatten()
-                        .map(|v: String| v.into())
-                        .unwrap_or(serde_json::Value::Null),
-                    _ => row
-                        .try_get::<_, Option<String>>(idx)
-                        .ok()
-                        .flatten()
-                        .map(|v: String| v.into())
-                        .unwrap_or(serde_json::Value::Null),
-                };
-                map.insert(col.name().to_string(), value);
-            }
-            serde_json::Value::Object(map)
-        })
-        .collect();
+            let json_rows: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|row: &tokio_postgres::Row| {
+                    let mut map = serde_json::Map::new();
+                    for (idx, col) in row.columns().iter().enumerate() {
+                        let value: serde_json::Value = match col.type_().name() {
+                            "void" => serde_json::Value::Null,
+                            "int4" => row
+                                .try_get::<_, Option<i32>>(idx)
+                                .ok()
+                                .flatten()
+                                .map(|v: i32| v.into())
+                                .unwrap_or(serde_json::Value::Null),
+                            "int8" => row
+                                .try_get::<_, Option<i64>>(idx)
+                                .ok()
+                                .flatten()
+                                .map(|v: i64| v.into())
+                                .unwrap_or(serde_json::Value::Null),
+                            "float4" => row
+                                .try_get::<_, Option<f32>>(idx)
+                                .ok()
+                                .flatten()
+                                .map(|v: f32| v.into())
+                                .unwrap_or(serde_json::Value::Null),
+                            "float8" => row
+                                .try_get::<_, Option<f64>>(idx)
+                                .ok()
+                                .flatten()
+                                .map(|v: f64| v.into())
+                                .unwrap_or(serde_json::Value::Null),
+                            "bool" => row
+                                .try_get::<_, Option<bool>>(idx)
+                                .ok()
+                                .flatten()
+                                .map(|v: bool| v.into())
+                                .unwrap_or(serde_json::Value::Null),
+                            "text" | "varchar" => row
+                                .try_get::<_, Option<String>>(idx)
+                                .ok()
+                                .flatten()
+                                .map(|v: String| v.into())
+                                .unwrap_or(serde_json::Value::Null),
+                            _ => row
+                                .try_get::<_, Option<String>>(idx)
+                                .ok()
+                                .flatten()
+                                .map(|v: String| v.into())
+                                .unwrap_or(serde_json::Value::Null),
+                        };
+                        map.insert(col.name().to_string(), value);
+                    }
+                    serde_json::Value::Object(map)
+                })
+                .collect();
+
+            (columns, json_rows, Some(rows.len()))
+        }
+        crate::postgres::QueryExecutionResult::Affected(affected) => {
+            (vec![], vec![], Some(affected as usize))
+        }
+    };
 
     // Save to history (legacy table)
     let now = Utc::now().timestamp();
@@ -178,7 +185,7 @@ pub async fn execute_query(
     Ok(QueryResult {
         columns,
         rows: json_rows,
-        rows_affected: Some(rows.len()),
+        rows_affected,
     })
 }
 
