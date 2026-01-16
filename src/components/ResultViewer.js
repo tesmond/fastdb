@@ -52,6 +52,11 @@ const ResultViewer = memo(
       };
     }, [results]);
 
+    const shouldShowRowsAffected = useMemo(() => {
+      if (rowsAffected === null || rowsAffected === undefined) return false;
+      return rows.length === 0;
+    }, [rowsAffected, rows.length]);
+
     // Filter rows based on search term
     const filteredRows = useMemo(() => {
       if (!searchTerm.trim()) return rows;
@@ -271,6 +276,32 @@ const ResultViewer = memo(
               </Box>
             )}
           </Alert>
+        </Box>
+      );
+    }
+
+    if (shouldShowRowsAffected) {
+      return (
+        <Box
+          sx={{
+            height: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexDirection: "column",
+            gap: 2,
+            p: 3,
+          }}
+        >
+          <Chip
+            color="success"
+            label={`${rowsAffected} row${rowsAffected === 1 ? "" : "s"} affected`}
+          />
+          {executionTime !== null && (
+            <Typography variant="body2" color="text.secondary">
+              Completed in {executionTime} ms
+            </Typography>
+          )}
         </Box>
       );
     }

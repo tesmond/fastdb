@@ -1,7 +1,8 @@
-import React, { useState, useCallback, memo } from "react";
+import React, { useState, useCallback, memo, useEffect } from "react";
 import { Box, Tabs, Tab, IconButton, Tooltip, Paper, Drawer } from "@mui/material";
 import { Add, Close } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/tauri";
+import { listen } from "@tauri-apps/api/event";
 import QueryEditor from "./QueryEditor";
 import ResultViewer from "./ResultViewer";
 import QueryHistory from "./QueryHistory";
@@ -10,6 +11,42 @@ const RightPanel = memo(({ selectedServer }) => {
   const [tabs, setTabs] = useState([]);
   const [activeTab, setActiveTab] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [autocompleteItems, setAutocompleteItems] = useState({
+    tables: [],
+    columns: [],
+    indexes: [],
+  });
+
+  useEffect(() => {
+    let unlistenPromise;
+
+    const loadAutocomplete = async (serverId) => {
+      try {
+        const items = await invoke("get_autocomplete_items", { serverId });
+        setAutocompleteItems(items);
+      } catch (error) {
+        console.error("Failed to load autocomplete items:", error);
+      }
+    };
+
+    if (selectedServer?.id) {
+      loadAutocomplete(selectedServer.id);
+    } else {
+      setAutocompleteItems({ tables: [], columns: [], indexes: [] });
+    }
+
+    unlistenPromise = listen("schema_updated", (event) => {
+      if (event?.payload?.serverId === selectedServer?.id) {
+        loadAutocomplete(selectedServer.id);
+      }
+    });
+
+    return () => {
+      if (unlistenPromise) {
+        unlistenPromise.then((fn) => fn());
+      }
+    };
+  }, [selectedServer]);
 
   // Create a new query tab
   const handleNewTab = useCallback(() => {
@@ -23,6 +60,8 @@ const RightPanel = memo(({ selectedServer }) => {
       results: null,
       error: null,
       isExecuting: false,
+      isCancelling: false,
+      queryId: null,
       executionTime: null,
       rowsAffected: null,
     };
@@ -63,11 +102,19 @@ const RightPanel = memo(({ selectedServer }) => {
       const currentTab = tabs[activeTab];
       if (!currentTab || !sql.trim()) return;
 
+      const queryId = `${currentTab.id}-${Date.now()}`;
+
       // Update tab state to executing
       setTabs((prev) =>
         prev.map((tab, index) =>
           index === activeTab
-            ? { ...tab, isExecuting: true, error: null }
+            ? {
+                ...tab,
+                isExecuting: true,
+                isCancelling: false,
+                error: null,
+                queryId,
+              }
             : tab,
         ),
       );
@@ -78,6 +125,7 @@ const RightPanel = memo(({ selectedServer }) => {
         const result = await invoke("execute_query", {
           serverId: currentTab.serverId,
           sql: sql.trim(),
+          queryId,
         });
 
         const executionTime = Date.now() - startTime;
@@ -92,6 +140,8 @@ const RightPanel = memo(({ selectedServer }) => {
                   results: result,
                   error: null,
                   isExecuting: false,
+                  isCancelling: false,
+                  queryId: null,
                   executionTime,
                   rowsAffected: result?.rowsAffected || null,
                 }
@@ -100,6 +150,10 @@ const RightPanel = memo(({ selectedServer }) => {
         );
       } catch (error) {
         const executionTime = Date.now() - startTime;
+        const errorMessage = error?.toString?.() || String(error);
+        const isCanceled =
+          errorMessage.includes("57014") ||
+          errorMessage.toLowerCase().includes("canceling statement due to user request");
 
         // Update tab with error
         setTabs((prev) =>
@@ -109,8 +163,12 @@ const RightPanel = memo(({ selectedServer }) => {
                   ...tab,
                   sql,
                   results: null,
-                  error: `Error executing query:\n${sql}\n\n${error.toString()}`,
+                  error: isCanceled
+                    ? "Query canceled."
+                    : `Error executing query:\n${sql}\n\n${errorMessage}`,
                   isExecuting: false,
+                  isCancelling: false,
+                  queryId: null,
                   executionTime,
                 }
               : tab,
@@ -120,6 +178,27 @@ const RightPanel = memo(({ selectedServer }) => {
     },
     [tabs, activeTab],
   );
+
+  const handleCancel = useCallback(async () => {
+    const currentTab = tabs[activeTab];
+    if (!currentTab?.queryId) return;
+
+    setTabs((prev) =>
+      prev.map((tab, index) =>
+        index === activeTab ? { ...tab, isCancelling: true } : tab,
+      ),
+    );
+
+    try {
+      await invoke("cancel_query", { queryId: currentTab.queryId });
+    } catch (error) {
+      setTabs((prev) =>
+        prev.map((tab, index) =>
+          index === activeTab ? { ...tab, isCancelling: false } : tab,
+        ),
+      );
+    }
+  }, [tabs, activeTab]);
 
   // Clear results for current tab
   const handleClear = useCallback(() => {
@@ -153,6 +232,8 @@ const RightPanel = memo(({ selectedServer }) => {
       results: null,
       error: null,
       isExecuting: false,
+      isCancelling: false,
+      queryId: null,
       executionTime: null,
       rowsAffected: null,
     };
@@ -290,10 +371,13 @@ const RightPanel = memo(({ selectedServer }) => {
               serverId={currentTab.serverId}
               serverName={currentTab.serverName}
               initialSql={currentTab.sql}
+              autocompleteItems={autocompleteItems}
               onExecute={handleExecute}
+              onCancel={handleCancel}
               onClear={handleClear}
               onShowHistory={handleShowHistory}
               isExecuting={currentTab.isExecuting}
+              isCancelling={currentTab.isCancelling}
             />
           </Box>
 

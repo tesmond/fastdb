@@ -1,7 +1,6 @@
-import React, { useState, useCallback, useEffect, memo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, memo, useRef, useMemo } from 'react';
 import {
   Box,
-  TextField,
   Button,
   IconButton,
   Tooltip,
@@ -16,19 +15,28 @@ import {
   History,
   Save,
 } from '@mui/icons-material';
+import CodeMirror from '@uiw/react-codemirror';
+import { sql as sqlLang } from '@codemirror/lang-sql';
+import { EditorView, keymap, placeholder } from '@codemirror/view';
+import { indentWithTab } from '@codemirror/commands';
+import { autocompletion, completeFromList } from '@codemirror/autocomplete';
+import { Prec } from '@codemirror/state';
 
 const QueryEditor = memo(({
   serverId,
   serverName,
   initialSql = '',
+  autocompleteItems = { tables: [], columns: [], indexes: [] },
   onExecute,
+  onCancel,
   onClear,
   onShowHistory,
-  isExecuting = false
+  isExecuting = false,
+  isCancelling = false
 }) => {
   const [sql, setSql] = useState(initialSql);
   const [rows, setRows] = useState(0);
-  const textFieldRef = useRef(null);
+  const editorViewRef = useRef(null);
 
   // Update SQL when initialSql changes (e.g., from history selection)
   useEffect(() => {
@@ -37,13 +45,13 @@ const QueryEditor = memo(({
       setRows(initialSql.split('\n').length);
       // Move cursor to end of text
       setTimeout(() => {
-        if (textFieldRef.current) {
-          const input = textFieldRef.current.querySelector('textarea');
-          if (input) {
-            input.focus();
-            input.setSelectionRange(initialSql.length, initialSql.length);
-          }
-        }
+        const view = editorViewRef.current;
+        if (!view) return;
+        view.focus();
+        view.dispatch({
+          selection: { anchor: view.state.doc.length },
+          scrollIntoView: true,
+        });
       }, 0);
     }
   }, [initialSql]);
@@ -64,32 +72,125 @@ const QueryEditor = memo(({
     if (onClear) onClear();
   }, [onClear]);
 
-  const handleKeyDown = useCallback((e) => {
-    // Ctrl+Enter or Cmd+Enter to execute
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault();
-      handleExecute();
-    }
-    // Tab key inserts 2 spaces instead of leaving field
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const start = e.target.selectionStart;
-      const end = e.target.selectionEnd;
-      const newValue = sql.substring(0, start) + '  ' + sql.substring(end);
-      setSql(newValue);
-      // Set cursor position after the inserted spaces
-      setTimeout(() => {
-        e.target.selectionStart = e.target.selectionEnd = start + 2;
-      }, 0);
-    }
-  }, [sql, handleExecute]);
-
-  const handleChange = useCallback((e) => {
-    const value = e.target.value;
+  const handleChange = useCallback((value) => {
     setSql(value);
     // Count approximate rows (lines)
     setRows(value.split('\n').length);
   }, []);
+
+  const executeKeymap = useMemo(
+    () =>
+      Prec.highest(
+        keymap.of([
+          {
+            key: 'Mod-Enter',
+            run: () => {
+              handleExecute();
+              return true;
+            },
+          },
+          {
+            key: 'Ctrl-Enter',
+            run: () => {
+              handleExecute();
+              return true;
+            },
+          },
+          {
+            key: 'Cmd-Enter',
+            run: () => {
+              handleExecute();
+              return true;
+            },
+          },
+          indentWithTab,
+        ]),
+      ),
+    [handleExecute],
+  );
+
+  const editorPlaceholder = serverId
+    ? "Enter SQL query here...\n\nExamples:\nSELECT * FROM table_name LIMIT 100;\nSHOW TABLES;"
+    : 'Select a server to start querying';
+
+  const completionSource = useMemo(() => {
+    const items = [];
+
+    const sqlKeywords = [
+      'SELECT',
+      'FROM',
+      'WHERE',
+      'INSERT',
+      'INTO',
+      'UPDATE',
+      'DELETE',
+      'VALUES',
+      'SET',
+      'JOIN',
+      'LEFT',
+      'RIGHT',
+      'INNER',
+      'OUTER',
+      'FULL',
+      'ON',
+      'GROUP',
+      'BY',
+      'ORDER',
+      'LIMIT',
+      'OFFSET',
+      'HAVING',
+      'AS',
+      'DISTINCT',
+      'CREATE',
+      'TABLE',
+      'INDEX',
+      'DROP',
+      'ALTER',
+      'ADD',
+      'PRIMARY',
+      'KEY',
+      'FOREIGN',
+      'REFERENCES',
+      'UNION',
+      'ALL',
+      'EXISTS',
+      'CASE',
+      'WHEN',
+      'THEN',
+      'ELSE',
+      'END',
+      'LIKE',
+      'ILIKE',
+      'IS',
+      'NULL',
+      'NOT',
+      'AND',
+      'OR',
+      'TRUE',
+      'FALSE',
+      'RETURNING',
+      'WITH',
+      'EXPLAIN',
+      'ANALYZE',
+      'SHOW',
+    ];
+
+    sqlKeywords.forEach((keyword) => {
+      items.push({ label: keyword, type: 'keyword', info: 'SQL keyword' });
+    });
+
+    autocompleteItems.tables.forEach((name) => {
+      items.push({ label: name, type: 'table', info: 'table' });
+    });
+    autocompleteItems.columns.forEach((name) => {
+      items.push({ label: name, type: 'property', info: 'column' });
+    });
+    autocompleteItems.indexes.forEach((name) => {
+      items.push({ label: name, type: 'keyword', info: 'index' });
+    });
+
+    return completeFromList(items);
+  }, [autocompleteItems]);
 
   return (
     <Paper
@@ -149,7 +250,8 @@ const QueryEditor = memo(({
               <IconButton
                 size="small"
                 color="error"
-                disabled={!isExecuting}
+                onClick={onCancel}
+                disabled={!isExecuting || isCancelling}
               >
                 <Stop />
               </IconButton>
@@ -178,54 +280,35 @@ const QueryEditor = memo(({
             </IconButton>
           </Tooltip>
 
-          <Tooltip title="Save query">
-            <IconButton
-              size="small"
-              disabled={!sql.trim()}
-            >
-              <Save />
-            </IconButton>
-          </Tooltip>
         </Box>
       </Box>
 
       {/* SQL Editor */}
-      <Box ref={textFieldRef} sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        <TextField
-          multiline
-          fullWidth
-          variant="outlined"
-          placeholder={
-            serverId
-              ? "Enter SQL query here...\n\nExamples:\nSELECT * FROM table_name LIMIT 100;\nSHOW TABLES;"
-              : "Select a server to start querying"
-          }
+      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        <CodeMirror
           value={sql}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          disabled={!serverId || isExecuting}
-          sx={{
-            flex: 1,
-            '& .MuiOutlinedInput-root': {
-              height: '100%',
-              alignItems: 'flex-start',
-              fontFamily: '"Fira Code", "Consolas", "Monaco", monospace',
-              fontSize: '13px',
-              lineHeight: 1.6,
-              '& fieldset': {
-                border: 'none',
+          height="100%"
+          extensions={[
+            sqlLang(),
+            EditorView.lineWrapping,
+            executeKeymap,
+            placeholder(editorPlaceholder),
+            autocompletion({ override: [completionSource] }),
+            EditorView.editable.of(Boolean(serverId) && !isExecuting),
+            EditorView.theme({
+              '&': {
+                height: '100%',
+                fontFamily: '"Fira Code", "Consolas", "Monaco", monospace',
+                fontSize: '13px',
+                lineHeight: 1.6,
               },
-            },
-            '& .MuiInputBase-input': {
-              height: '100% !important',
-              overflow: 'auto !important',
-              padding: 2,
-            },
-          }}
-          InputProps={{
-            sx: {
-              height: '100%',
-            },
+              '.cm-scroller': { overflow: 'auto' },
+              '.cm-content': { padding: '16px' },
+            }),
+          ]}
+          onChange={handleChange}
+          onCreateEditor={(view) => {
+            editorViewRef.current = view;
           }}
         />
       </Box>

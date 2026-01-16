@@ -17,6 +17,7 @@ import {
   Storage,
   TableChart,
   ViewColumn,
+  ListAlt,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/tauri";
 
@@ -30,10 +31,14 @@ function LeftPanel({
   const [expandedServers, setExpandedServers] = useState(new Set());
   const [expandedSchemas, setExpandedSchemas] = useState(new Set());
   const [expandedTables, setExpandedTables] = useState(new Set());
+  const [expandedColumns, setExpandedColumns] = useState(new Set());
+  const [expandedIndexes, setExpandedIndexes] = useState(new Set());
   const [tables, setTables] = useState({});
   const [columns, setColumns] = useState({});
+  const [indexes, setIndexes] = useState({});
   const [loadingTables, setLoadingTables] = useState(new Set());
   const [loadingColumns, setLoadingColumns] = useState(new Set());
+  const [loadingIndexes, setLoadingIndexes] = useState(new Set());
 
   const handleServerClick = (server) => {
     onServerSelect(server);
@@ -88,6 +93,19 @@ function LeftPanel({
       }
       return newSet;
     });
+  };
+
+  const handleColumnsClick = async (tableId) => {
+    const wasExpanded = expandedColumns.has(tableId);
+    setExpandedColumns((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(tableId)) {
+        newSet.delete(tableId);
+      } else {
+        newSet.add(tableId);
+      }
+      return newSet;
+    });
 
     if (!wasExpanded && !columns[tableId]) {
       setLoadingColumns((prev) => new Set(prev).add(tableId));
@@ -98,6 +116,35 @@ function LeftPanel({
         console.error("Failed to load columns:", error);
       } finally {
         setLoadingColumns((prev) => {
+          const newSet = new Set(prev);
+          newSet.delete(tableId);
+          return newSet;
+        });
+      }
+    }
+  };
+
+  const handleIndexesClick = async (tableId) => {
+    const wasExpanded = expandedIndexes.has(tableId);
+    setExpandedIndexes((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(tableId)) {
+        newSet.delete(tableId);
+      } else {
+        newSet.add(tableId);
+      }
+      return newSet;
+    });
+
+    if (!wasExpanded && !indexes[tableId]) {
+      setLoadingIndexes((prev) => new Set(prev).add(tableId));
+      try {
+        const indexList = await invoke("get_indexes", { tableId });
+        setIndexes((prev) => ({ ...prev, [tableId]: indexList }));
+      } catch (error) {
+        console.error("Failed to load indexes:", error);
+      } finally {
+        setLoadingIndexes((prev) => {
           const newSet = new Set(prev);
           newSet.delete(tableId);
           return newSet;
@@ -192,30 +239,95 @@ function LeftPanel({
                                   unmountOnExit
                                 >
                                   <List component="div" disablePadding>
-                                    {loadingColumns.has(table.id) ? (
-                                      <ListItem sx={{ pl: 8 }}>
-                                        <CircularProgress
-                                          size={16}
-                                          sx={{ mr: 1 }}
-                                        />
-                                        <ListItemText primary="Loading columns..." />
-                                      </ListItem>
-                                    ) : (
-                                      (columns[table.id] || []).map(
-                                        (column) => (
-                                          <ListItem
-                                            key={column.id}
-                                            sx={{ pl: 8 }}
-                                          >
-                                            <ViewColumn sx={{ mr: 1 }} />
-                                            <ListItemText
-                                              primary={column.name}
-                                              secondary={`${column.data_type}${column.nullable ? "" : " NOT NULL"}`}
+                                    <ListItemButton
+                                      sx={{ pl: 8 }}
+                                      onClick={() => handleColumnsClick(table.id)}
+                                    >
+                                      <ViewColumn sx={{ mr: 1 }} />
+                                      <ListItemText primary="Columns" />
+                                      {expandedColumns.has(table.id) ? (
+                                        <ExpandLess />
+                                      ) : (
+                                        <ExpandMore />
+                                      )}
+                                    </ListItemButton>
+                                    <Collapse
+                                      in={expandedColumns.has(table.id)}
+                                      timeout="auto"
+                                      unmountOnExit
+                                    >
+                                      <List component="div" disablePadding>
+                                        {loadingColumns.has(table.id) ? (
+                                          <ListItem sx={{ pl: 10 }}>
+                                            <CircularProgress
+                                              size={16}
+                                              sx={{ mr: 1 }}
                                             />
+                                            <ListItemText primary="Loading columns..." />
                                           </ListItem>
-                                        ),
-                                      )
-                                    )}
+                                        ) : (
+                                          (columns[table.id] || []).map(
+                                            (column) => (
+                                              <ListItem
+                                                key={column.id}
+                                                sx={{ pl: 10 }}
+                                              >
+                                                <ViewColumn sx={{ mr: 1 }} />
+                                                <ListItemText
+                                                  primary={column.name}
+                                                  secondary={`${column.data_type}${column.nullable ? "" : " NOT NULL"}`}
+                                                />
+                                              </ListItem>
+                                            ),
+                                          )
+                                        )}
+                                      </List>
+                                    </Collapse>
+
+                                    <ListItemButton
+                                      sx={{ pl: 8 }}
+                                      onClick={() => handleIndexesClick(table.id)}
+                                    >
+                                      <ListAlt sx={{ mr: 1 }} />
+                                      <ListItemText primary="Indexes" />
+                                      {expandedIndexes.has(table.id) ? (
+                                        <ExpandLess />
+                                      ) : (
+                                        <ExpandMore />
+                                      )}
+                                    </ListItemButton>
+                                    <Collapse
+                                      in={expandedIndexes.has(table.id)}
+                                      timeout="auto"
+                                      unmountOnExit
+                                    >
+                                      <List component="div" disablePadding>
+                                        {loadingIndexes.has(table.id) ? (
+                                          <ListItem sx={{ pl: 10 }}>
+                                            <CircularProgress
+                                              size={16}
+                                              sx={{ mr: 1 }}
+                                            />
+                                            <ListItemText primary="Loading indexes..." />
+                                          </ListItem>
+                                        ) : (
+                                          (indexes[table.id] || []).map(
+                                            (index) => (
+                                              <ListItem
+                                                key={index.id}
+                                                sx={{ pl: 10 }}
+                                              >
+                                                <ListAlt sx={{ mr: 1 }} />
+                                                <ListItemText
+                                                  primary={index.name}
+                                                  secondary={index.definition}
+                                                />
+                                              </ListItem>
+                                            ),
+                                          )
+                                        )}
+                                      </List>
+                                    </Collapse>
                                   </List>
                                 </Collapse>
                               </React.Fragment>
