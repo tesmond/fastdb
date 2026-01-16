@@ -64,7 +64,15 @@ pub async fn execute_query(server_id: String, sql: String) -> Result<QueryResult
 
     let rows = crate::postgres::execute_query(&server.id, &server.host, server.port as u16, &server.username, &password, &server.database, &sql)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            // Format database errors in a human-readable way
+            if let Some(db_error) = e.downcast_ref::<tokio_postgres::Error>() {
+                if let Some(db_err) = db_error.as_db_error() {
+                    return format!("{}: {}", db_err.code().code(), db_err.message());
+                }
+            }
+            format!("Error: {}", e)
+        })?;
 
     // Extract column information
     let columns = if !rows.is_empty() {
