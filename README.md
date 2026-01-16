@@ -63,7 +63,7 @@ FastDB is a desktop application built with Tauri and React that provides a moder
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/fastdb.git
+git clone https://github.com/tesmond/fastdb.git
 cd fastdb
 
 # Install frontend dependencies
@@ -121,6 +121,7 @@ npm run tauri build
 
 **Frontend:**
 - React 18.2 with hooks
+- Vite 5.0 for blazing fast builds and HMR
 - Material-UI 5.11 for components
 - react-window for virtualization
 - Tauri API for backend communication
@@ -167,12 +168,11 @@ npm install
 # Run in development mode
 npm run tauri dev
 
-# Run tests (future)
-npm test
+# Build for production
+npm run build
 
 # Format code
 cargo fmt
-npm run format
 ```
 
 ### Code Style
@@ -187,6 +187,7 @@ MIT License - see [LICENSE](LICENSE) file for details
 ## 🙏 Acknowledgments
 
 - [Tauri](https://tauri.app/) - Desktop app framework
+- [Vite](https://vitejs.dev/) - Next generation frontend tooling
 - [Material-UI](https://mui.com/) - React component library
 - [rusqlite](https://github.com/rusqlite/rusqlite) - SQLite bindings
 - [tokio-postgres](https://github.com/sfackler/rust-postgres) - PostgreSQL driver
@@ -210,4 +211,4 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ---
 
-Built using Rust and React
+Built with ⚡ Vite, React, and Rust

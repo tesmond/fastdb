@@ -72,6 +72,21 @@ pub struct QueryHistory {
     pub success: i32,
 }
 
+/// Deduplicated query history entry
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct QueryHistoryEntry {
+    pub id: String,
+    pub server_id: String,
+    /// The original SQL text (preserving formatting from last execution)
+    pub sql: String,
+    /// Normalized SQL for deduplication (trimmed, collapsed whitespace)
+    pub normalized_sql: String,
+    /// Timestamp of the last execution
+    pub last_executed_at: i64,
+    /// Number of times this query was executed
+    pub execution_count: i64,
+}
+
 pub fn init_db() -> Result<(), rusqlite::Error> {
     let conn = DB.lock().unwrap();
 
@@ -134,6 +149,23 @@ pub fn init_db() -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_query_history_server_exec
             ON query_history(server_id, executed_at DESC)
             WHERE success = 1;
+
+        -- Deduplicated query history for UI
+        CREATE TABLE IF NOT EXISTS query_history_dedup (
+            id TEXT PRIMARY KEY,
+            server_id TEXT NOT NULL,
+            sql TEXT NOT NULL,
+            normalized_sql TEXT NOT NULL,
+            last_executed_at INTEGER NOT NULL,
+            execution_count INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_query_history_dedup_server_time
+            ON query_history_dedup(server_id, last_executed_at DESC);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_query_history_dedup_normalized
+            ON query_history_dedup(server_id, normalized_sql);
         "#
     )?;
 
@@ -423,6 +455,138 @@ pub fn add_query_history(history: &QueryHistory) -> Result<(), rusqlite::Error> 
         history.success
     ])?;
 
+    Ok(())
+}
+
+// ============================================================================
+// Deduplicated Query History Operations
+// ============================================================================
+
+/// Normalize SQL for deduplication:
+/// - Trim leading/trailing whitespace
+/// - Collapse consecutive whitespace characters into single spaces
+fn normalize_sql(sql: &str) -> String {
+    sql.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Upsert a query into the deduplicated history.
+/// If the normalized SQL already exists for this server, update it.
+/// Otherwise, insert a new entry.
+pub fn upsert_query_history_dedup(
+    server_id: &str,
+    sql: &str,
+    executed_at: i64,
+) -> Result<(), rusqlite::Error> {
+    let normalized = normalize_sql(sql);
+    let conn = DB.lock().unwrap();
+
+    // Try to find existing entry
+    let existing_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM query_history_dedup WHERE server_id = ? AND normalized_sql = ?",
+            params![server_id, &normalized],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    if let Some(id) = existing_id {
+        // Update existing entry
+        let mut stmt = conn.prepare_cached(
+            "UPDATE query_history_dedup 
+             SET sql = ?, last_executed_at = ?, execution_count = execution_count + 1
+             WHERE id = ?"
+        )?;
+        stmt.execute(params![sql, executed_at, id])?;
+    } else {
+        // Insert new entry
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut stmt = conn.prepare_cached(
+            "INSERT INTO query_history_dedup (id, server_id, sql, normalized_sql, last_executed_at, execution_count)
+             VALUES (?, ?, ?, ?, ?, 1)"
+        )?;
+        stmt.execute(params![id, server_id, sql, &normalized, executed_at])?;
+    }
+
+    Ok(())
+}
+
+/// Get deduplicated query history for a server, sorted by most recently executed first.
+pub fn get_query_history_dedup(
+    server_id: &str,
+    limit: usize,
+) -> Result<Vec<QueryHistoryEntry>, rusqlite::Error> {
+    let conn = DB.lock().unwrap();
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, server_id, sql, normalized_sql, last_executed_at, execution_count
+         FROM query_history_dedup
+         WHERE server_id = ?
+         ORDER BY last_executed_at DESC
+         LIMIT ?"
+    )?;
+
+    let history = stmt
+        .query_map(params![server_id, limit], |row| {
+            Ok(QueryHistoryEntry {
+                id: row.get(0)?,
+                server_id: row.get(1)?,
+                sql: row.get(2)?,
+                normalized_sql: row.get(3)?,
+                last_executed_at: row.get(4)?,
+                execution_count: row.get(5)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(history)
+}
+
+/// Search query history with case-insensitive partial matching.
+/// Results are still sorted by most recently executed first.
+pub fn search_query_history_dedup(
+    server_id: &str,
+    search_term: &str,
+    limit: usize,
+) -> Result<Vec<QueryHistoryEntry>, rusqlite::Error> {
+    let conn = DB.lock().unwrap();
+    let search_pattern = format!("%{}%", search_term);
+    
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, server_id, sql, normalized_sql, last_executed_at, execution_count
+         FROM query_history_dedup
+         WHERE server_id = ? AND sql LIKE ? ESCAPE '\\'
+         ORDER BY last_executed_at DESC
+         LIMIT ?"
+    )?;
+
+    let history = stmt
+        .query_map(params![server_id, &search_pattern, limit], |row| {
+            Ok(QueryHistoryEntry {
+                id: row.get(0)?,
+                server_id: row.get(1)?,
+                sql: row.get(2)?,
+                normalized_sql: row.get(3)?,
+                last_executed_at: row.get(4)?,
+                execution_count: row.get(5)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(history)
+}
+
+/// Delete a specific query from the deduplicated history.
+pub fn delete_query_history_entry(entry_id: &str) -> Result<(), rusqlite::Error> {
+    let conn = DB.lock().unwrap();
+    let mut stmt = conn.prepare_cached("DELETE FROM query_history_dedup WHERE id = ?")?;
+    stmt.execute([entry_id])?;
+    Ok(())
+}
+
+/// Clear all deduplicated query history for a server.
+pub fn clear_query_history_dedup(server_id: &str) -> Result<(), rusqlite::Error> {
+    let conn = DB.lock().unwrap();
+    let mut stmt = conn.prepare_cached("DELETE FROM query_history_dedup WHERE server_id = ?")?;
+    stmt.execute([server_id])?;
     Ok(())
 }
 

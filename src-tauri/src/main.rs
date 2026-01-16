@@ -32,6 +32,10 @@ async fn main() {
             commands::get_tables,
             commands::get_columns,
             commands::add_server,
+            commands::get_query_history_dedup,
+            commands::search_query_history,
+            commands::delete_query_history_entry,
+            commands::clear_query_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
