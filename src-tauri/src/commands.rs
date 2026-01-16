@@ -4,7 +4,6 @@ use crate::credentials;
 use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use uuid::Uuid;
-use std::panic::AssertUnwindSafe;
 
 #[derive(Serialize, Deserialize)]
 pub struct QueryResult {
@@ -95,32 +94,47 @@ pub async fn execute_query(server_id: String, sql: String) -> Result<QueryResult
             let mut map = serde_json::Map::new();
             for (idx, col) in row.columns().iter().enumerate() {
                 let value: serde_json::Value = match col.type_().name() {
-                    "int4" => std::panic::catch_unwind(AssertUnwindSafe(|| row.get::<_, Option<i32>>(idx)))
-                        .unwrap_or(None)
+                    "void" => serde_json::Value::Null,
+                    "int4" => row
+                        .try_get::<_, Option<i32>>(idx)
+                        .ok()
+                        .flatten()
                         .map(|v: i32| v.into())
                         .unwrap_or(serde_json::Value::Null),
-                    "int8" => std::panic::catch_unwind(AssertUnwindSafe(|| row.get::<_, Option<i64>>(idx)))
-                        .unwrap_or(None)
+                    "int8" => row
+                        .try_get::<_, Option<i64>>(idx)
+                        .ok()
+                        .flatten()
                         .map(|v: i64| v.into())
                         .unwrap_or(serde_json::Value::Null),
-                    "float4" => std::panic::catch_unwind(AssertUnwindSafe(|| row.get::<_, Option<f32>>(idx)))
-                        .unwrap_or(None)
+                    "float4" => row
+                        .try_get::<_, Option<f32>>(idx)
+                        .ok()
+                        .flatten()
                         .map(|v: f32| v.into())
                         .unwrap_or(serde_json::Value::Null),
-                    "float8" => std::panic::catch_unwind(AssertUnwindSafe(|| row.get::<_, Option<f64>>(idx)))
-                        .unwrap_or(None)
+                    "float8" => row
+                        .try_get::<_, Option<f64>>(idx)
+                        .ok()
+                        .flatten()
                         .map(|v: f64| v.into())
                         .unwrap_or(serde_json::Value::Null),
-                    "bool" => std::panic::catch_unwind(AssertUnwindSafe(|| row.get::<_, Option<bool>>(idx)))
-                        .unwrap_or(None)
+                    "bool" => row
+                        .try_get::<_, Option<bool>>(idx)
+                        .ok()
+                        .flatten()
                         .map(|v: bool| v.into())
                         .unwrap_or(serde_json::Value::Null),
-                    "text" | "varchar" => std::panic::catch_unwind(AssertUnwindSafe(|| row.get::<_, Option<String>>(idx)))
-                        .unwrap_or(None)
+                    "text" | "varchar" => row
+                        .try_get::<_, Option<String>>(idx)
+                        .ok()
+                        .flatten()
                         .map(|v: String| v.into())
                         .unwrap_or(serde_json::Value::Null),
-                    _ => std::panic::catch_unwind(AssertUnwindSafe(|| row.get::<_, Option<String>>(idx)))
-                        .unwrap_or(None)
+                    _ => row
+                        .try_get::<_, Option<String>>(idx)
+                        .ok()
+                        .flatten()
                         .map(|v: String| v.into())
                         .unwrap_or(serde_json::Value::Null),
                 };
