@@ -25,7 +25,7 @@
         "depends": []
       },
       "externalBin": [],
-      "icon": ["icons/icon_2.ico", "icons/icon.png"],
+      "icon": ["icons/icon.ico"],
       "identifier": "com.fastdb.app",
       "longDescription": "",
       "macOS": {
