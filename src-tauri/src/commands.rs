@@ -128,6 +128,7 @@ pub async fn execute_query(
     let is_create_table = normalized.starts_with("create table");
     let is_drop_table = normalized.starts_with("drop table");
     let is_drop_database = normalized.starts_with("drop database");
+    let is_drop_schema = normalized.starts_with("drop schema");
 
     let server = db::get_server_by_id(&server_id)
         .map_err(|e| e.to_string())?
@@ -235,9 +236,9 @@ pub async fn execute_query(
         }
     };
 
-    if is_drop_table || is_drop_database {
+    if is_drop_table || is_drop_database || is_drop_schema {
         if let Err(e) = crate::schema::refresh_schema_for_server(&server, &password).await {
-            eprintln!("Failed to refresh schema after DROP TABLE/DATABASE: {}", e);
+            eprintln!("Failed to refresh schema after DROP TABLE/SCHEMA/DATABASE: {}", e);
         } else {
             let updated_schemas = db::get_schemas(&server_id).map_err(|e| e.to_string())?;
 
@@ -284,6 +285,8 @@ pub async fn execute_query(
         Some("Table dropped".to_string())
     } else if is_drop_database {
         Some("Database dropped".to_string())
+    } else if is_drop_schema {
+        Some("Schema dropped".to_string())
     } else {
         None
     };

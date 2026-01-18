@@ -364,6 +364,10 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
             : tab,
         ),
       );
+
+      if (onSchemaRefresh) {
+        onSchemaRefresh({ id: active.serverId });
+      }
     } catch (error) {
       const executionTime = Date.now() - startTime;
       const errorMessage = error?.toString?.() || String(error);
@@ -384,7 +388,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
         ),
       );
     }
-  }, [tabs, activeTab]);
+  }, [tabs, activeTab, onSchemaRefresh]);
 
   return (
     <Box
