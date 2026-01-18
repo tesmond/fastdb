@@ -14,10 +14,13 @@ import {
   ListItem,
   ListItemText,
   CircularProgress,
+  Checkbox,
+  FormControlLabel,
 } from "@mui/material";
 import { Add, Close } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/tauri";
 import { listen } from "@tauri-apps/api/event";
+import { save } from "@tauri-apps/api/dialog";
 import QueryEditor from "./QueryEditor";
 import ResultViewer from "./ResultViewer";
 import QueryHistory from "./QueryHistory";
@@ -109,6 +112,113 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     };
   }, []);
 
+  useEffect(() => {
+    const handleOpenExportSchemaTab = (event) => {
+      const { server, schema } = event.detail || {};
+      if (!server || !schema) return;
+
+      const newTab = {
+        id: Date.now(),
+        type: "export",
+        serverId: server.id,
+        serverName: server.name,
+        schemaName: schema.name,
+        schemaId: schema.id,
+        includeData: false,
+        exportPath: null,
+        results: null,
+        error: null,
+        isExecuting: false,
+        isCancelling: false,
+        queryId: null,
+        executionTime: null,
+        rowsAffected: null,
+      };
+
+      setTabs((prev) => {
+        const newTabs = [...prev, newTab];
+        setActiveTab(newTabs.length - 1);
+        return newTabs;
+      });
+    };
+
+    window.addEventListener("open-export-schema-tab", handleOpenExportSchemaTab);
+    return () => {
+      window.removeEventListener("open-export-schema-tab", handleOpenExportSchemaTab);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleOpenExportTableTab = (event) => {
+      const { server, schema, table } = event.detail || {};
+      if (!server || !schema || !table) return;
+
+      const newTab = {
+        id: Date.now(),
+        type: "export-table",
+        serverId: server.id,
+        serverName: server.name,
+        schemaName: schema.name,
+        schemaId: schema.id,
+        tableName: table.name,
+        includeData: false,
+        exportPath: null,
+        results: null,
+        error: null,
+        isExecuting: false,
+        isCancelling: false,
+        queryId: null,
+        executionTime: null,
+        rowsAffected: null,
+      };
+
+      setTabs((prev) => {
+        const newTabs = [...prev, newTab];
+        setActiveTab(newTabs.length - 1);
+        return newTabs;
+      });
+    };
+
+    window.addEventListener("open-export-table-tab", handleOpenExportTableTab);
+    return () => {
+      window.removeEventListener("open-export-table-tab", handleOpenExportTableTab);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleOpenQuerySchemaTab = (event) => {
+      const { server, schema } = event.detail || {};
+      if (!server || !schema) return;
+
+      const newTab = {
+        id: Date.now(),
+        type: "query",
+        serverId: server.id,
+        serverName: server.name,
+        schemaName: schema.name,
+        sql: "",
+        results: null,
+        error: null,
+        isExecuting: false,
+        isCancelling: false,
+        queryId: null,
+        executionTime: null,
+        rowsAffected: null,
+      };
+
+      setTabs((prev) => {
+        const newTabs = [...prev, newTab];
+        setActiveTab(newTabs.length - 1);
+        return newTabs;
+      });
+    };
+
+    window.addEventListener("open-query-schema-tab", handleOpenQuerySchemaTab);
+    return () => {
+      window.removeEventListener("open-query-schema-tab", handleOpenQuerySchemaTab);
+    };
+  }, []);
+
   // Create a new query tab
   const handleNewTab = useCallback(() => {
     if (!selectedServer) return;
@@ -191,6 +301,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
           serverId: currentTab.serverId,
           sql: sql.trim(),
           queryId,
+          schemaName: currentTab.schemaName || null,
         });
 
         const executionTime = Date.now() - startTime;
@@ -390,6 +501,143 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     }
   }, [tabs, activeTab, onSchemaRefresh]);
 
+  const handleExportSchema = useCallback(async () => {
+    const active = tabs[activeTab];
+    if (!active || active.type !== "export") return;
+
+    const path = await save({
+      filters: [{ name: "SQL Files", extensions: ["sql"] }],
+    });
+
+    if (!path) return;
+
+    setTabs((prev) =>
+      prev.map((tab, index) =>
+        index === activeTab
+          ? {
+              ...tab,
+              exportPath: path,
+              isExecuting: true,
+              error: null,
+              results: null,
+            }
+          : tab,
+      ),
+    );
+
+    const startTime = Date.now();
+
+    try {
+      const result = await invoke("export_schema_sql", {
+        serverId: active.serverId,
+        schemaName: active.schemaName,
+        includeData: active.includeData,
+        outputPath: path,
+      });
+
+      const executionTime = Date.now() - startTime;
+
+      setTabs((prev) =>
+        prev.map((tab, index) =>
+          index === activeTab
+            ? {
+                ...tab,
+                results: result,
+                error: null,
+                isExecuting: false,
+                executionTime,
+              }
+            : tab,
+        ),
+      );
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      const errorMessage = error?.toString?.() || String(error);
+
+      setTabs((prev) =>
+        prev.map((tab, index) =>
+          index === activeTab
+            ? {
+                ...tab,
+                isExecuting: false,
+                error: `Error exporting schema:\n${active.schemaName}\n\n${errorMessage}`,
+                executionTime,
+              }
+            : tab,
+        ),
+      );
+    }
+  }, [tabs, activeTab]);
+
+  const handleExportTable = useCallback(async () => {
+    const active = tabs[activeTab];
+    if (!active || active.type !== "export-table") return;
+
+    const path = await save({
+      filters: [{ name: "SQL Files", extensions: ["sql"] }],
+    });
+
+    if (!path) return;
+
+    setTabs((prev) =>
+      prev.map((tab, index) =>
+        index === activeTab
+          ? {
+              ...tab,
+              exportPath: path,
+              isExecuting: true,
+              error: null,
+              results: null,
+            }
+          : tab,
+      ),
+    );
+
+    const startTime = Date.now();
+
+    try {
+      const result = await invoke("export_table_sql", {
+        serverId: active.serverId,
+        schemaName: active.schemaName,
+        tableName: active.tableName,
+        includeData: active.includeData,
+        outputPath: path,
+      });
+
+      const executionTime = Date.now() - startTime;
+
+      setTabs((prev) =>
+        prev.map((tab, index) =>
+          index === activeTab
+            ? {
+                ...tab,
+                results: result,
+                error: null,
+                isExecuting: false,
+                executionTime,
+              }
+            : tab,
+        ),
+      );
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      const errorMessage = error?.toString?.() || String(error);
+
+      setTabs((prev) =>
+        prev.map((tab, index) =>
+          index === activeTab
+            ? {
+                ...tab,
+                isExecuting: false,
+                error: `Error exporting table:\n${active.schemaName}.${active.tableName}\n\n${errorMessage}`,
+                executionTime,
+              }
+            : tab,
+        ),
+      );
+    }
+  }, [tabs, activeTab]);
+
   return (
     <Box
       sx={{
@@ -427,7 +675,13 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                       <span>
                         {tab.type === "file"
                           ? tab.fileName || "SQL File"
-                          : `${tab.serverName || "Query"} #${index + 1}`}
+                          : tab.type === "export"
+                            ? `Export ${tab.schemaName || "schema"}`
+                            : tab.type === "export-table"
+                              ? `Export ${tab.tableName || "table"}`
+                            : tab.schemaName
+                              ? `${tab.serverName || "Query"} (${tab.schemaName}) #${index + 1}`
+                              : `${tab.serverName || "Query"} #${index + 1}`}
                       </span>
                       <Box
                         component="span"
@@ -517,7 +771,225 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
             overflow: "hidden",
           }}
         >
-          {currentTab.type === "file" ? (
+          {currentTab.type === "export" ? (
+            <>
+              <Box
+                sx={{
+                  height: "50%",
+                  minHeight: 200,
+                  borderBottom: 1,
+                  borderColor: "divider",
+                  overflow: "hidden",
+                  p: 2,
+                }}
+              >
+                <Paper
+                  elevation={0}
+                  sx={{
+                    height: "100%",
+                    border: 1,
+                    borderColor: "divider",
+                    p: 2,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 2,
+                    backgroundColor: "grey.50",
+                  }}
+                >
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 2,
+                    }}
+                  >
+                    <Box>
+                      <Typography variant="subtitle1">Export schema</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {currentTab.schemaName}
+                      </Typography>
+                    </Box>
+                    <Button
+                      variant="contained"
+                      onClick={handleExportSchema}
+                      disabled={currentTab.isExecuting}
+                      startIcon={
+                        currentTab.isExecuting ? (
+                          <CircularProgress size={16} />
+                        ) : null
+                      }
+                    >
+                      Export SQL
+                    </Button>
+                  </Box>
+                  <Divider />
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={Boolean(currentTab.includeData)}
+                        onChange={(event) => {
+                          const checked = event.target.checked;
+                          setTabs((prev) =>
+                            prev.map((tab, index) =>
+                              index === activeTab
+                                ? { ...tab, includeData: checked }
+                                : tab,
+                            ),
+                          );
+                        }}
+                      />
+                    }
+                    label="Include data"
+                  />
+                  <List dense sx={{ overflowY: "auto" }}>
+                    <ListItem disableGutters>
+                      <ListItemText
+                        primary="Schema"
+                        secondary={currentTab.schemaName}
+                      />
+                    </ListItem>
+                    <ListItem disableGutters>
+                      <ListItemText
+                        primary="Include data"
+                        secondary={currentTab.includeData ? "Yes" : "No"}
+                      />
+                    </ListItem>
+                    <ListItem disableGutters>
+                      <ListItemText
+                        primary="Output path"
+                        secondary={currentTab.exportPath || "Not selected"}
+                      />
+                    </ListItem>
+                  </List>
+                </Paper>
+              </Box>
+
+              <Box
+                sx={{
+                  height: "50%",
+                  overflow: "hidden",
+                }}
+              >
+                <ResultViewer
+                  results={currentTab.results}
+                  error={currentTab.error}
+                  isLoading={currentTab.isExecuting}
+                  executionTime={currentTab.executionTime}
+                  rowsAffected={currentTab.rowsAffected}
+                />
+              </Box>
+            </>
+          ) : currentTab.type === "export-table" ? (
+            <>
+              <Box
+                sx={{
+                  height: "50%",
+                  minHeight: 200,
+                  borderBottom: 1,
+                  borderColor: "divider",
+                  overflow: "hidden",
+                  p: 2,
+                }}
+              >
+                <Paper
+                  elevation={0}
+                  sx={{
+                    height: "100%",
+                    border: 1,
+                    borderColor: "divider",
+                    p: 2,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 2,
+                    backgroundColor: "grey.50",
+                  }}
+                >
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 2,
+                    }}
+                  >
+                    <Box>
+                      <Typography variant="subtitle1">Export table</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {currentTab.schemaName}.{currentTab.tableName}
+                      </Typography>
+                    </Box>
+                    <Button
+                      variant="contained"
+                      onClick={handleExportTable}
+                      disabled={currentTab.isExecuting}
+                      startIcon={
+                        currentTab.isExecuting ? (
+                          <CircularProgress size={16} />
+                        ) : null
+                      }
+                    >
+                      Export SQL
+                    </Button>
+                  </Box>
+                  <Divider />
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={Boolean(currentTab.includeData)}
+                        onChange={(event) => {
+                          const checked = event.target.checked;
+                          setTabs((prev) =>
+                            prev.map((tab, index) =>
+                              index === activeTab
+                                ? { ...tab, includeData: checked }
+                                : tab,
+                            ),
+                          );
+                        }}
+                      />
+                    }
+                    label="Include data"
+                  />
+                  <List dense sx={{ overflowY: "auto" }}>
+                    <ListItem disableGutters>
+                      <ListItemText
+                        primary="Table"
+                        secondary={`${currentTab.schemaName}.${currentTab.tableName}`}
+                      />
+                    </ListItem>
+                    <ListItem disableGutters>
+                      <ListItemText
+                        primary="Include data"
+                        secondary={currentTab.includeData ? "Yes" : "No"}
+                      />
+                    </ListItem>
+                    <ListItem disableGutters>
+                      <ListItemText
+                        primary="Output path"
+                        secondary={currentTab.exportPath || "Not selected"}
+                      />
+                    </ListItem>
+                  </List>
+                </Paper>
+              </Box>
+
+              <Box
+                sx={{
+                  height: "50%",
+                  overflow: "hidden",
+                }}
+              >
+                <ResultViewer
+                  results={currentTab.results}
+                  error={currentTab.error}
+                  isLoading={currentTab.isExecuting}
+                  executionTime={currentTab.executionTime}
+                  rowsAffected={currentTab.rowsAffected}
+                />
+              </Box>
+            </>
+          ) : currentTab.type === "file" ? (
             <>
               {/* SQL File Metadata (Top Half) */}
               <Box

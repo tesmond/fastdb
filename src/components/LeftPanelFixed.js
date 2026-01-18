@@ -47,6 +47,8 @@ function LeftPanelFixed({
   const [loadingIndexes, setLoadingIndexes] = useState(new Set());
   const [loadingViews, setLoadingViews] = useState(new Set());
   const [serverMenuState, setServerMenuState] = useState(null);
+  const [schemaMenuState, setSchemaMenuState] = useState(null);
+  const [tableMenuState, setTableMenuState] = useState(null);
 
   const getDatabaseName = (schema, server) =>
     schema.database_name || server.database || "";
@@ -81,6 +83,83 @@ function LeftPanelFixed({
 
   const handleCloseServerMenu = () => {
     setServerMenuState(null);
+  };
+
+  const handleSchemaContextMenu = (event, schema, server) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSchemaMenuState({
+      mouseX: event.clientX - 2,
+      mouseY: event.clientY - 4,
+      schema,
+      server,
+    });
+  };
+
+  const handleCloseSchemaMenu = () => {
+    setSchemaMenuState(null);
+  };
+
+  const handleTableContextMenu = (event, table, schema, server) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setTableMenuState({
+      mouseX: event.clientX - 2,
+      mouseY: event.clientY - 4,
+      table,
+      schema,
+      server,
+    });
+  };
+
+  const handleCloseTableMenu = () => {
+    setTableMenuState(null);
+  };
+
+  const handleExportTable = () => {
+    if (!tableMenuState?.table || !tableMenuState?.schema || !tableMenuState?.server) return;
+
+    window.dispatchEvent(
+      new CustomEvent("open-export-table-tab", {
+        detail: {
+          server: tableMenuState.server,
+          schema: tableMenuState.schema,
+          table: tableMenuState.table,
+        },
+      }),
+    );
+
+    handleCloseTableMenu();
+  };
+
+  const handleExportSchema = () => {
+    if (!schemaMenuState?.schema || !schemaMenuState?.server) return;
+
+    window.dispatchEvent(
+      new CustomEvent("open-export-schema-tab", {
+        detail: {
+          server: schemaMenuState.server,
+          schema: schemaMenuState.schema,
+        },
+      }),
+    );
+
+    handleCloseSchemaMenu();
+  };
+
+  const handleQuerySchema = () => {
+    if (!schemaMenuState?.schema || !schemaMenuState?.server) return;
+
+    window.dispatchEvent(
+      new CustomEvent("open-query-schema-tab", {
+        detail: {
+          server: schemaMenuState.server,
+          schema: schemaMenuState.schema,
+        },
+      }),
+    );
+
+    handleCloseSchemaMenu();
   };
 
   const handleRefreshServer = async () => {
@@ -342,6 +421,13 @@ function LeftPanelFixed({
                                     onClick={() =>
                                       handleSchemaClick(schema, server)
                                     }
+                                    onContextMenu={(event) =>
+                                      handleSchemaContextMenu(
+                                        event,
+                                        schema,
+                                        server,
+                                      )
+                                    }
                                   >
                                     <ListItemText primary={schema.name} />
                                     {expandedSchemas.has(schemaKey) ? (
@@ -381,6 +467,14 @@ function LeftPanelFixed({
                                                       table,
                                                       schema,
                                                       server
+                                                    )
+                                                  }
+                                                  onContextMenu={(event) =>
+                                                    handleTableContextMenu(
+                                                      event,
+                                                      table,
+                                                      schema,
+                                                      server,
                                                     )
                                                   }
                                                 >
@@ -558,6 +652,31 @@ function LeftPanelFixed({
       >
         <MenuItem onClick={handleRefreshServer}>Refresh schema</MenuItem>
         <MenuItem onClick={handleRunSqlFromFile}>Run SQL from file...</MenuItem>
+      </Menu>
+      <Menu
+        open={Boolean(schemaMenuState)}
+        onClose={handleCloseSchemaMenu}
+        anchorReference="anchorPosition"
+        anchorPosition={
+          schemaMenuState
+            ? { top: schemaMenuState.mouseY, left: schemaMenuState.mouseX }
+            : undefined
+        }
+      >
+        <MenuItem onClick={handleQuerySchema}>Query schema</MenuItem>
+        <MenuItem onClick={handleExportSchema}>Export SQL...</MenuItem>
+      </Menu>
+      <Menu
+        open={Boolean(tableMenuState)}
+        onClose={handleCloseTableMenu}
+        anchorReference="anchorPosition"
+        anchorPosition={
+          tableMenuState
+            ? { top: tableMenuState.mouseY, left: tableMenuState.mouseX }
+            : undefined
+        }
+      >
+        <MenuItem onClick={handleExportTable}>Export SQL...</MenuItem>
       </Menu>
     </Box>
   );

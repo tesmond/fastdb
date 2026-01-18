@@ -29,6 +29,8 @@ async fn main() {
             commands::cancel_query,
             commands::get_sql_file_metadata,
             commands::execute_sql_file,
+            commands::export_schema_sql,
+            commands::export_table_sql,
             commands::get_schema_tree,
             commands::refresh_schema,
             commands::get_query_history,
