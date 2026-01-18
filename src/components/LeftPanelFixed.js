@@ -392,7 +392,7 @@ function LeftPanelFixed({
                         }
                       >
                         <Storage sx={{ mr: 1 }} />
-                        <ListItemText primary={displayDatabaseName} />
+                        <ListItemText primary={displayDatabaseName} secondary="database" />
                         {expandedDatabases.has(databaseKey) ? (
                           <ExpandLess />
                         ) : (
@@ -429,7 +429,7 @@ function LeftPanelFixed({
                                       )
                                     }
                                   >
-                                    <ListItemText primary={schema.name} />
+                                    <ListItemText primary={schema.name} secondary="schema" />
                                     {expandedSchemas.has(schemaKey) ? (
                                       <ExpandLess />
                                     ) : (
@@ -481,7 +481,7 @@ function LeftPanelFixed({
                                                   <TableChart sx={{ mr: 1 }} />
                                                   <ListItemText
                                                     primary={table.name}
-                                                    secondary={table.type_}
+                                                    secondary="table"
                                                   />
                                                   {expandedTables.has(tableKey) ? (
                                                     <ExpandLess />
