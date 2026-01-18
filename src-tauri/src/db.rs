@@ -139,7 +139,6 @@ pub fn init_db() -> Result<(), rusqlite::Error> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_schemas_server_updated ON schemas(server_id, last_updated DESC);
-        CREATE INDEX IF NOT EXISTS idx_schemas_server_db_name ON schemas(server_id, database_name, name);
 
         CREATE TABLE IF NOT EXISTS tables (
             id TEXT PRIMARY KEY,
@@ -223,6 +222,12 @@ pub fn init_db() -> Result<(), rusqlite::Error> {
             return Err(err);
         }
     }
+
+    // Create index after ensuring database_name exists
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_schemas_server_db_name ON schemas(server_id, database_name, name)",
+        [],
+    )?;
 
     Ok(())
 }
