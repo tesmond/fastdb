@@ -11,6 +11,7 @@ pub struct QueryResult {
     pub rows: Vec<serde_json::Value>,
     #[serde(rename = "rowsAffected")]
     pub rows_affected: Option<usize>,
+    pub message: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -54,10 +55,16 @@ pub async fn connect_to_server(server_id: String) -> Result<String, String> {
 
 #[command]
 pub async fn execute_query(
+    window: Window,
     server_id: String,
     sql: String,
     query_id: Option<String>,
 ) -> Result<QueryResult, String> {
+    let normalized = normalize_sql_head(&sql);
+    let is_create_table = normalized.starts_with("create table");
+    let is_drop_table = normalized.starts_with("drop table");
+    let is_drop_database = normalized.starts_with("drop database");
+
     let server = db::get_server_by_id(&server_id)
         .map_err(|e| e.to_string())?
         .ok_or("Server not found")?;
@@ -164,6 +171,31 @@ pub async fn execute_query(
         }
     };
 
+    if is_drop_table || is_drop_database {
+        if let Err(e) = crate::schema::refresh_schema_for_server(&server, &password).await {
+            eprintln!("Failed to refresh schema after DROP TABLE/DATABASE: {}", e);
+        } else {
+            let updated_schemas = db::get_schemas(&server_id).map_err(|e| e.to_string())?;
+
+            #[derive(Serialize, Clone)]
+            struct SchemaUpdate {
+                #[serde(rename = "serverId")]
+                server_id: String,
+                schemas: Vec<db::Schema>,
+            }
+
+            window
+                .emit(
+                    "schema_updated",
+                    SchemaUpdate {
+                        server_id: server_id.clone(),
+                        schemas: updated_schemas,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
     // Save to history (legacy table)
     let now = Utc::now().timestamp();
     let history = QueryHistory {
@@ -182,11 +214,45 @@ pub async fn execute_query(
         eprintln!("Failed to save deduplicated query history: {}", e);
     }
 
+    let message = if is_create_table {
+        Some("Table created".to_string())
+    } else if is_drop_table {
+        Some("Table dropped".to_string())
+    } else if is_drop_database {
+        Some("Database dropped".to_string())
+    } else {
+        None
+    };
+
     Ok(QueryResult {
         columns,
         rows: json_rows,
         rows_affected,
+        message,
     })
+}
+
+fn normalize_sql_head(sql: &str) -> String {
+    let mut s = sql.trim_start().to_string();
+
+    loop {
+        let trimmed = s.trim_start();
+        if trimmed.starts_with("--") {
+            if let Some(pos) = trimmed.find('\n') {
+                s = trimmed[pos + 1..].to_string();
+                continue;
+            }
+            return "".to_string();
+        }
+        if trimmed.starts_with("/*") {
+            if let Some(end) = trimmed.find("*/") {
+                s = trimmed[end + 2..].to_string();
+                continue;
+            }
+            return "".to_string();
+        }
+        return trimmed.to_lowercase();
+    }
 }
 
 #[command]
