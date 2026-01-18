@@ -31,6 +31,7 @@ async fn main() {
             commands::refresh_schema,
             commands::get_query_history,
             commands::get_tables,
+            commands::get_views,
             commands::get_columns,
             commands::get_indexes,
             commands::get_autocomplete_items,

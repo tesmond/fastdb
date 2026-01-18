@@ -248,6 +248,11 @@ pub async fn get_tables(schema_id: String) -> Result<Vec<db::Table>, String> {
 }
 
 #[command]
+pub async fn get_views(schema_id: String) -> Result<Vec<db::View>, String> {
+    db::get_views(&schema_id).map_err(|e| e.to_string())
+}
+
+#[command]
 pub async fn get_columns(table_id: String) -> Result<Vec<db::Column>, String> {
     db::get_columns(&table_id).map_err(|e| e.to_string())
 }
@@ -260,7 +265,7 @@ pub async fn get_indexes(table_id: String) -> Result<Vec<db::Index>, String> {
     }
 
     let context = db::get_table_context(&table_id).map_err(|e| e.to_string())?;
-    let Some((table_name, schema_name, server_id)) = context else {
+    let Some((table_name, schema_name, server_id, database_name)) = context else {
         return Ok(vec![]);
     };
 
@@ -271,13 +276,19 @@ pub async fn get_indexes(table_id: String) -> Result<Vec<db::Index>, String> {
     let password = credentials::retrieve_password(&server.credential_key)
         .map_err(|e| format!("Failed to retrieve password: {}", e))?;
 
+    let target_database = if database_name.is_empty() {
+        server.database.clone()
+    } else {
+        database_name
+    };
+
     let pool = crate::postgres::get_or_create_pool(
         &server.id,
         &server.host,
         server.port as u16,
         &server.username,
         &password,
-        &server.database,
+        &target_database,
     )
     .await
     .map_err(|e| e.to_string())?;

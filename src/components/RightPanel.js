@@ -7,7 +7,7 @@ import QueryEditor from "./QueryEditor";
 import ResultViewer from "./ResultViewer";
 import QueryHistory from "./QueryHistory";
 
-const RightPanel = memo(({ selectedServer }) => {
+const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
   const [tabs, setTabs] = useState([]);
   const [activeTab, setActiveTab] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -102,6 +102,9 @@ const RightPanel = memo(({ selectedServer }) => {
       const currentTab = tabs[activeTab];
       if (!currentTab || !sql.trim()) return;
 
+      const isSchemaChanging = (statement) =>
+        /(^|\s)(create|alter)\s+/i.test(statement);
+
       const queryId = `${currentTab.id}-${Date.now()}`;
 
       // Update tab state to executing
@@ -148,6 +151,10 @@ const RightPanel = memo(({ selectedServer }) => {
               : tab,
           ),
         );
+
+        if (onSchemaRefresh && isSchemaChanging(sql)) {
+          onSchemaRefresh({ id: currentTab.serverId });
+        }
       } catch (error) {
         const executionTime = Date.now() - startTime;
         const errorMessage = error?.toString?.() || String(error);
@@ -176,7 +183,7 @@ const RightPanel = memo(({ selectedServer }) => {
         );
       }
     },
-    [tabs, activeTab],
+    [tabs, activeTab, onSchemaRefresh],
   );
 
   const handleCancel = useCallback(async () => {

@@ -1,4 +1,4 @@
-use crate::db::{self, Schema, Table, Column, Index};
+use crate::db::{self, Schema, Table, Column, Index, View};
 use crate::postgres;
 use uuid::Uuid;
 use chrono::Utc;
@@ -26,80 +26,152 @@ pub async fn refresh_schema_for_server(
     let mut tables_to_insert = Vec::new();
     let mut columns_to_insert = Vec::new();
     let mut indexes_to_insert = Vec::new();
+    let mut views_to_insert = Vec::new();
 
-    // Fetch schemas
-    let schema_rows = client
+    // Fetch databases (exclude templates and system databases)
+    let database_rows = client
         .query(
-            "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('information_schema', 'pg_catalog')",
+            "SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname",
             &[],
         )
         .await?;
-    for row in schema_rows {
-        let schema_name: String = row.get(0);
-        let schema_id = Uuid::new_v4().to_string();
-        schemas_to_insert.push(Schema {
-            id: schema_id.clone(),
-            server_id: server.id.to_string(),
-            name: schema_name.clone(),
-            last_updated: Utc::now().timestamp(),
-        });
 
-        // Fetch tables for this schema
-        let table_rows = client
+    for row in database_rows {
+        let database_name: String = row.get(0);
+
+        let db_pool = match postgres::get_or_create_pool(
+            &server.id,
+            &server.host,
+            server.port as u16,
+            &server.username,
+            password,
+            &database_name,
+        )
+        .await
+        {
+            Ok(pool) => pool,
+            Err(err) => {
+                eprintln!("Failed to connect to database {}: {}", database_name, err);
+                continue;
+            }
+        };
+
+        let db_client = match db_pool.get().await {
+            Ok(client) => client,
+            Err(err) => {
+                eprintln!("Failed to get client for database {}: {}", database_name, err);
+                continue;
+            }
+        };
+
+        // Fetch schemas for this database (exclude system schemas)
+        let schema_rows = db_client
             .query(
-                "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = $1",
-                &[&schema_name],
+                "SELECT nspname AS schema_name
+                 FROM pg_namespace
+                 WHERE nspname NOT IN ('information_schema', 'pg_catalog')
+                   AND nspname NOT LIKE 'pg_toast%'
+                   AND nspname NOT LIKE 'pg_temp%'
+                   AND nspname !~ '^pg_'
+                 ORDER BY nspname",
+                &[],
             )
             .await?;
-        for table_row in table_rows {
-            let table_name: String = table_row.get(0);
-            let table_type: String = table_row.get(1);
-            let table_id = Uuid::new_v4().to_string();
-            tables_to_insert.push(Table {
-                id: table_id.clone(),
-                schema_id: schema_id.clone(),
-                name: table_name.clone(),
-                type_: table_type,
+
+        for row in schema_rows {
+            let schema_name: String = row.get(0);
+            let schema_id = Uuid::new_v4().to_string();
+            schemas_to_insert.push(Schema {
+                id: schema_id.clone(),
+                server_id: server.id.to_string(),
+                database_name: database_name.clone(),
+                name: schema_name.clone(),
+                last_updated: Utc::now().timestamp(),
             });
 
-            // Fetch columns for this table
-            let column_rows = client
+            // Fetch tables for this schema (base tables only)
+            let table_rows = db_client
                 .query(
-                    "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2",
-                    &[&schema_name, &table_name],
+                    "SELECT table_name, table_type
+                     FROM information_schema.tables
+                     WHERE table_schema = $1 AND table_type = 'BASE TABLE'",
+                    &[&schema_name],
                 )
                 .await?;
-            for column_row in column_rows {
-                let column_name: String = column_row.get(0);
-                let data_type: String = column_row.get(1);
-                let is_nullable: String = column_row.get(2);
-                let nullable = if is_nullable == "YES" { 1 } else { 0 };
-                let column_id = Uuid::new_v4().to_string();
-                columns_to_insert.push(Column {
-                    id: column_id,
-                    table_id: table_id.clone(),
-                    name: column_name,
-                    data_type,
-                    nullable,
+
+            for table_row in table_rows {
+                let table_name: String = table_row.get(0);
+                let table_type: String = table_row.get(1);
+                let table_id = Uuid::new_v4().to_string();
+                tables_to_insert.push(Table {
+                    id: table_id.clone(),
+                    schema_id: schema_id.clone(),
+                    name: table_name.clone(),
+                    type_: table_type,
                 });
+
+                // Fetch columns for this table
+                let column_rows = db_client
+                    .query(
+                        "SELECT column_name, data_type, is_nullable
+                         FROM information_schema.columns
+                         WHERE table_schema = $1 AND table_name = $2",
+                        &[&schema_name, &table_name],
+                    )
+                    .await?;
+                for column_row in column_rows {
+                    let column_name: String = column_row.get(0);
+                    let data_type: String = column_row.get(1);
+                    let is_nullable: String = column_row.get(2);
+                    let nullable = if is_nullable == "YES" { 1 } else { 0 };
+                    let column_id = Uuid::new_v4().to_string();
+                    columns_to_insert.push(Column {
+                        id: column_id,
+                        table_id: table_id.clone(),
+                        name: column_name,
+                        data_type,
+                        nullable,
+                    });
+                }
+
+                // Fetch indexes for this table
+                let index_rows = db_client
+                    .query(
+                        "SELECT indexname, indexdef
+                         FROM pg_indexes
+                         WHERE schemaname = $1 AND tablename = $2",
+                        &[&schema_name, &table_name],
+                    )
+                    .await?;
+                for index_row in index_rows {
+                    let index_name: String = index_row.get(0);
+                    let index_def: String = index_row.get(1);
+                    let index_id = Uuid::new_v4().to_string();
+                    indexes_to_insert.push(Index {
+                        id: index_id,
+                        table_id: table_id.clone(),
+                        name: index_name,
+                        definition: index_def,
+                    });
+                }
             }
 
-            // Fetch indexes for this table
-            let index_rows = client
+            // Fetch views for this schema
+            let view_rows = db_client
                 .query(
-                    "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = $2",
-                    &[&schema_name, &table_name],
+                    "SELECT table_name
+                     FROM information_schema.views
+                     WHERE table_schema = $1",
+                    &[&schema_name],
                 )
                 .await?;
-            for index_row in index_rows {
-                let index_name: String = index_row.get(0);
-                let index_def: String = index_row.get(1);
-                let index_id = Uuid::new_v4().to_string();
-                indexes_to_insert.push(Index {
-                    id: index_id,
-                    table_id: table_id.clone(),
-                    name: index_name,
-                    definition: index_def,
+            for view_row in view_rows {
+                let view_name: String = view_row.get(0);
+                let view_id = Uuid::new_v4().to_string();
+                views_to_insert.push(View {
+                    id: view_id,
+                    schema_id: schema_id.clone(),
+                    name: view_name,
                 });
             }
         }
@@ -112,6 +184,7 @@ pub async fn refresh_schema_for_server(
         &tables_to_insert,
         &columns_to_insert,
         &indexes_to_insert,
+        &views_to_insert,
     )?;
 
     Ok(())

@@ -41,6 +41,7 @@ pub struct Server {
 pub struct Schema {
     pub id: String,
     pub server_id: String,
+    pub database_name: String,
     pub name: String,
     pub last_updated: i64,
 }
@@ -69,6 +70,13 @@ pub struct Index {
     pub table_id: String,
     pub name: String,
     pub definition: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct View {
+    pub id: String,
+    pub schema_id: String,
+    pub name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -124,12 +132,14 @@ pub fn init_db() -> Result<(), rusqlite::Error> {
         CREATE TABLE IF NOT EXISTS schemas (
             id TEXT PRIMARY KEY,
             server_id TEXT NOT NULL,
+            database_name TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL,
             last_updated INTEGER NOT NULL,
             FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
         );
 
         CREATE INDEX IF NOT EXISTS idx_schemas_server_updated ON schemas(server_id, last_updated DESC);
+        CREATE INDEX IF NOT EXISTS idx_schemas_server_db_name ON schemas(server_id, database_name, name);
 
         CREATE TABLE IF NOT EXISTS tables (
             id TEXT PRIMARY KEY,
@@ -162,6 +172,15 @@ pub fn init_db() -> Result<(), rusqlite::Error> {
 
         CREATE INDEX IF NOT EXISTS idx_indexes_table_id ON indexes(table_id);
 
+        CREATE TABLE IF NOT EXISTS views (
+            id TEXT PRIMARY KEY,
+            schema_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            FOREIGN KEY (schema_id) REFERENCES schemas(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_views_schema_name ON views(schema_id, name);
+
         CREATE TABLE IF NOT EXISTS query_history (
             id TEXT PRIMARY KEY,
             server_id TEXT NOT NULL,
@@ -193,6 +212,17 @@ pub fn init_db() -> Result<(), rusqlite::Error> {
             ON query_history_dedup(server_id, normalized_sql);
         "#
     )?;
+
+    // Ensure database_name column exists for older installs
+    if let Err(err) = conn.execute(
+        "ALTER TABLE schemas ADD COLUMN database_name TEXT NOT NULL DEFAULT ''",
+        [],
+    ) {
+        let err_str = err.to_string();
+        if !err_str.contains("duplicate column name") {
+            return Err(err);
+        }
+    }
 
     Ok(())
 }
@@ -291,10 +321,10 @@ pub fn delete_server(server_id: &str) -> Result<(), rusqlite::Error> {
 pub fn get_schemas(server_id: &str) -> Result<Vec<Schema>, rusqlite::Error> {
     let conn = DB.lock().unwrap();
     let mut stmt = conn.prepare_cached(
-        "SELECT id, server_id, name, last_updated
+        "SELECT id, server_id, database_name, name, last_updated
          FROM schemas
          WHERE server_id = ?
-         ORDER BY name",
+         ORDER BY database_name, name",
     )?;
 
     let schemas = stmt
@@ -302,8 +332,9 @@ pub fn get_schemas(server_id: &str) -> Result<Vec<Schema>, rusqlite::Error> {
             Ok(Schema {
                 id: row.get(0)?,
                 server_id: row.get(1)?,
-                name: row.get(2)?,
-                last_updated: row.get(3)?,
+                database_name: row.get(2)?,
+                name: row.get(3)?,
+                last_updated: row.get(4)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -322,13 +353,14 @@ pub fn batch_insert_schemas(schemas: &[Schema]) -> Result<(), rusqlite::Error> {
 
     {
         let mut stmt = tx.prepare_cached(
-            "INSERT INTO schemas (id, server_id, name, last_updated) VALUES (?, ?, ?, ?)",
+            "INSERT INTO schemas (id, server_id, database_name, name, last_updated) VALUES (?, ?, ?, ?, ?)",
         )?;
 
         for schema in schemas {
             stmt.execute(params![
                 schema.id,
                 schema.server_id,
+                schema.database_name,
                 schema.name,
                 schema.last_updated
             ])?;
@@ -411,19 +443,42 @@ pub fn get_columns(table_id: &str) -> Result<Vec<Column>, rusqlite::Error> {
 
 pub fn get_table_context(
     table_id: &str,
-) -> Result<Option<(String, String, String)>, rusqlite::Error> {
+) -> Result<Option<(String, String, String, String)>, rusqlite::Error> {
     let conn = DB.lock().unwrap();
     let mut stmt = conn.prepare_cached(
-        "SELECT t.name, s.name, s.server_id
+        "SELECT t.name, s.name, s.server_id, s.database_name
          FROM tables t
          JOIN schemas s ON s.id = t.schema_id
          WHERE t.id = ?",
     )?;
 
     stmt.query_row([table_id], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
     })
     .optional()
+}
+
+// View operations
+pub fn get_views(schema_id: &str) -> Result<Vec<View>, rusqlite::Error> {
+    let conn = DB.lock().unwrap();
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, schema_id, name
+         FROM views
+         WHERE schema_id = ?
+         ORDER BY name",
+    )?;
+
+    let views = stmt
+        .query_map([schema_id], |row| {
+            Ok(View {
+                id: row.get(0)?,
+                schema_id: row.get(1)?,
+                name: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(views)
 }
 
 // Index operations
@@ -735,6 +790,12 @@ pub fn clear_server_schema_data(server_id: &str) -> Result<(), rusqlite::Error> 
 
     // Delete in reverse order of foreign key dependencies
     tx.execute(
+        "DELETE FROM views WHERE schema_id IN
+         (SELECT id FROM schemas WHERE server_id = ?)",
+        [server_id],
+    )?;
+
+    tx.execute(
         "DELETE FROM indexes WHERE table_id IN
          (SELECT id FROM tables WHERE schema_id IN
           (SELECT id FROM schemas WHERE server_id = ?))",
@@ -767,11 +828,18 @@ pub fn refresh_server_schema(
     tables: &[Table],
     columns: &[Column],
     indexes: &[Index],
+    views: &[View],
 ) -> Result<(), rusqlite::Error> {
     let mut conn = DB.lock().unwrap();
     let tx = conn.transaction()?;
 
     // Clear old data
+    tx.execute(
+        "DELETE FROM views WHERE schema_id IN
+         (SELECT id FROM schemas WHERE server_id = ?)",
+        [server_id],
+    )?;
+
     tx.execute(
         "DELETE FROM indexes WHERE table_id IN
          (SELECT id FROM tables WHERE schema_id IN
@@ -797,12 +865,13 @@ pub fn refresh_server_schema(
     // Batch insert new data
     {
         let mut stmt = tx.prepare_cached(
-            "INSERT INTO schemas (id, server_id, name, last_updated) VALUES (?, ?, ?, ?)",
+            "INSERT INTO schemas (id, server_id, database_name, name, last_updated) VALUES (?, ?, ?, ?, ?)",
         )?;
         for schema in schemas {
             stmt.execute(params![
                 schema.id,
                 schema.server_id,
+                schema.database_name,
                 schema.name,
                 schema.last_updated
             ])?;
@@ -814,6 +883,14 @@ pub fn refresh_server_schema(
             .prepare_cached("INSERT INTO tables (id, schema_id, name, type) VALUES (?, ?, ?, ?)")?;
         for table in tables {
             stmt.execute(params![table.id, table.schema_id, table.name, table.type_])?;
+        }
+    }
+
+    {
+        let mut stmt =
+            tx.prepare_cached("INSERT INTO views (id, schema_id, name) VALUES (?, ?, ?)")?;
+        for view in views {
+            stmt.execute(params![view.id, view.schema_id, view.name])?;
         }
     }
 

@@ -13,7 +13,7 @@ import {
 } from "@mui/material";
 import { invoke } from "@tauri-apps/api/tauri";
 import { listen } from "@tauri-apps/api/event";
-import LeftPanel from "./components/LeftPanel";
+import LeftPanelFixed from "./components/LeftPanelFixed";
 import RightPanel from "./components/RightPanel";
 
 const theme = createTheme();
@@ -61,17 +61,19 @@ function App() {
         serverId: server.id,
       });
       setSchemas(schemaList);
-      // Check if schema is stale (e.g., >1 hour old)
-      const now = Date.now() / 1000;
-      const isStale =
-        schemaList.length === 0 ||
-        schemaList.some((s) => now - s.last_updated > 3600);
-      if (isStale) {
-        // Trigger background refresh
-        invoke("refresh_schema", { serverId: server.id });
-      }
+      // Always refresh schema in the background for up-to-date data
+      invoke("refresh_schema", { serverId: server.id });
     } catch (error) {
       console.error("Failed to load schema:", error);
+    }
+  };
+
+  const handleRefreshServer = async (server) => {
+    try {
+      await invoke("refresh_schema", { serverId: server.id });
+      await loadServers();
+    } catch (error) {
+      console.error("Failed to refresh server schema:", error);
     }
   };
 
@@ -110,14 +112,18 @@ function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Box sx={{ display: "flex", height: "100vh" }}>
-        <LeftPanel
+        <LeftPanelFixed
           servers={servers}
           schemas={schemas}
           onServerSelect={handleServerSelect}
           selectedServer={selectedServer}
+          onRefreshServer={handleRefreshServer}
           onAddServer={() => setAddServerOpen(true)}
         />
-        <RightPanel selectedServer={selectedServer} />
+        <RightPanel
+          selectedServer={selectedServer}
+          onSchemaRefresh={handleRefreshServer}
+        />
       </Box>
       <Dialog open={addServerOpen} onClose={() => setAddServerOpen(false)}>
         <DialogTitle>Add Server</DialogTitle>
