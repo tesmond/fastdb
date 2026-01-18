@@ -4,6 +4,14 @@ use crate::credentials;
 use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use uuid::Uuid;
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, BufReader};
+use tokio_postgres::CopyInSink;
+use bytes::Bytes;
+use futures_util::SinkExt;
+use std::pin::Pin;
 
 #[derive(Serialize, Deserialize)]
 pub struct QueryResult {
@@ -19,6 +27,37 @@ pub struct ColumnInfo {
     pub name: String,
     #[serde(rename = "type")]
     pub type_: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SqlFileMetadata {
+    pub path: String,
+    pub name: String,
+    #[serde(rename = "sizeBytes")]
+    pub size_bytes: u64,
+    #[serde(rename = "createdAt")]
+    pub created_at: Option<i64>,
+}
+
+fn system_time_to_epoch_millis(time: SystemTime) -> Option<i64> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+}
+
+fn format_pg_error(error: &tokio_postgres::Error) -> String {
+    if let Some(db_err) = error.as_db_error() {
+        format!(
+            "{}: {}\nDetail: {}\nHint: {}\nWhere: {}",
+            db_err.code().code(),
+            db_err.message(),
+            db_err.detail().unwrap_or("(none)"),
+            db_err.hint().unwrap_or("(none)"),
+            db_err.where_().unwrap_or("(none)")
+        )
+    } else {
+        error.to_string()
+    }
 }
 
 #[command]
@@ -51,6 +90,31 @@ pub async fn connect_to_server(server_id: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     Ok(server_id)
+}
+
+#[command]
+pub async fn get_sql_file_metadata(file_path: String) -> Result<SqlFileMetadata, String> {
+    let path = Path::new(&file_path);
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("(unknown)")
+        .to_string();
+
+    let metadata = std::fs::metadata(&file_path)
+        .map_err(|e| format!("Failed to read file metadata: {}", e))?;
+
+    let created_at = metadata
+        .created()
+        .ok()
+        .and_then(system_time_to_epoch_millis);
+
+    Ok(SqlFileMetadata {
+        path: file_path,
+        name,
+        size_bytes: metadata.len(),
+        created_at,
+    })
 }
 
 #[command]
@@ -228,6 +292,318 @@ pub async fn execute_query(
         columns,
         rows: json_rows,
         rows_affected,
+        message,
+    })
+}
+
+#[command]
+pub async fn execute_sql_file(server_id: String, file_path: String) -> Result<QueryResult, String> {
+    let server = db::get_server_by_id(&server_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Server not found")?;
+
+    let password = credentials::retrieve_password(&server.credential_key)
+        .map_err(|e| format!("Failed to retrieve password: {}", e))?;
+
+    let pool = crate::postgres::get_or_create_pool(
+        &server.id,
+        &server.host,
+        server.port as u16,
+        &server.username,
+        &password,
+        &server.database,
+    )
+    .await
+    .map_err(|e| format!("Failed to connect to database: {}", e))?;
+
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("Failed to get database client: {}", e))?;
+
+    let path = Path::new(&file_path);
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("SQL file");
+
+    let file = File::open(&file_path)
+        .await
+        .map_err(|e| format!("Failed to open SQL file: {}", e))?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = vec![0u8; 64 * 1024];
+
+    let mut statement = String::new();
+    let mut statement_count: usize = 0;
+
+    let mut in_copy = false;
+    let mut copy_sink: Option<Pin<Box<CopyInSink<Bytes>>>> = None;
+    let mut copy_line_buffer = String::new();
+
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut pending_single_quote_end = false;
+    let mut pending_double_quote_end = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut block_prev_char: Option<char> = None;
+    let mut dollar_tag: Option<String> = None;
+    let mut dollar_candidate: Option<String> = None;
+
+    loop {
+        let bytes_read = reader
+            .read(&mut buffer)
+            .await
+            .map_err(|e| format!("Failed to read SQL file: {}", e))?;
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        let chunk = String::from_utf8_lossy(&buffer[..bytes_read]);
+        let mut iter = chunk.chars().peekable();
+
+        while let Some(c) = iter.next() {
+            let mut ch = c;
+            let mut reprocess = true;
+
+            while reprocess {
+                reprocess = false;
+
+                if in_copy {
+                    if ch == '\n' {
+                        let line = copy_line_buffer.trim_end_matches('\r');
+                        if line == "\\." {
+                            if let Some(mut sink) = copy_sink.take() {
+                                match sink.as_mut().finish().await {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        let detail = format_pg_error(&e);
+                                        return Err(format!("Failed to finalize COPY: {}", detail));
+                                    }
+                                }
+                            }
+                            in_copy = false;
+                        } else if line.trim().is_empty() {
+                            copy_line_buffer.clear();
+                            continue;
+                        } else if let Some(sink) = copy_sink.as_mut() {
+                            sink.as_mut()
+                                .send(Bytes::from(line.to_owned()))
+                                .await
+                                .map_err(|e| format!("Failed writing COPY data: {}", e))?;
+                            sink.as_mut()
+                                .send(Bytes::from_static(b"\n"))
+                                .await
+                                .map_err(|e| format!("Failed writing COPY data: {}", e))?;
+                        }
+                        copy_line_buffer.clear();
+                    } else {
+                        copy_line_buffer.push(ch);
+                    }
+                    continue;
+                }
+
+                if pending_single_quote_end {
+                    if ch == '\'' {
+                        statement.push(ch);
+                        pending_single_quote_end = false;
+                        continue;
+                    } else {
+                        in_single_quote = false;
+                        pending_single_quote_end = false;
+                        reprocess = true;
+                        continue;
+                    }
+                }
+
+                if pending_double_quote_end {
+                    if ch == '"' {
+                        statement.push(ch);
+                        pending_double_quote_end = false;
+                        continue;
+                    } else {
+                        in_double_quote = false;
+                        pending_double_quote_end = false;
+                        reprocess = true;
+                        continue;
+                    }
+                }
+
+                if in_line_comment {
+                    if ch == '\n' {
+                        in_line_comment = false;
+                    }
+                    continue;
+                }
+
+                if in_block_comment {
+                    if block_prev_char == Some('*') && ch == '/' {
+                        in_block_comment = false;
+                        block_prev_char = None;
+                    } else {
+                        block_prev_char = Some(ch);
+                    }
+                    continue;
+                }
+
+                if let Some(tag) = &dollar_tag {
+                    statement.push(ch);
+                    if ch == '$' && statement.ends_with(tag) {
+                        dollar_tag = None;
+                    }
+                    continue;
+                }
+
+                if let Some(tag) = dollar_candidate.as_mut() {
+                    statement.push(ch);
+                    if ch == '$' {
+                        let tag_value = dollar_candidate.take().unwrap_or_default();
+                        dollar_tag = Some(format!("${}$", tag_value));
+                    } else if ch.is_ascii_alphanumeric() || ch == '_' {
+                        tag.push(ch);
+                    } else {
+                        dollar_candidate = None;
+                    }
+                    continue;
+                }
+
+                if in_single_quote {
+                    statement.push(ch);
+                    if ch == '\'' {
+                        pending_single_quote_end = true;
+                    }
+                    continue;
+                }
+
+                if in_double_quote {
+                    statement.push(ch);
+                    if ch == '"' {
+                        pending_double_quote_end = true;
+                    }
+                    continue;
+                }
+
+                if ch == '-' && iter.peek() == Some(&'-') {
+                    if let Some(_) = iter.next() {
+                        in_line_comment = true;
+                    }
+                    continue;
+                }
+
+                if ch == '/' && iter.peek() == Some(&'*') {
+                    if let Some(_) = iter.next() {
+                        in_block_comment = true;
+                        block_prev_char = Some('*');
+                    }
+                    continue;
+                }
+
+                if ch == '$' {
+                    statement.push(ch);
+                    dollar_candidate = Some(String::new());
+                    continue;
+                }
+
+                if ch == '\'' {
+                    statement.push(ch);
+                    in_single_quote = true;
+                    continue;
+                }
+
+                if ch == '"' {
+                    statement.push(ch);
+                    in_double_quote = true;
+                    continue;
+                }
+
+                if ch == ';' {
+                    let trimmed = statement.trim();
+                    if !trimmed.is_empty() {
+                        let trimmed_lower = trimmed.to_lowercase();
+                        if trimmed_lower.starts_with("copy")
+                            && trimmed_lower.contains("from stdin")
+                        {
+                            let sink = client
+                                .copy_in(trimmed)
+                                .await
+                                .map_err(|e| format!("Failed to start COPY: {}", e))?;
+                            copy_sink = Some(Box::pin(sink));
+                            in_copy = true;
+                        } else {
+                            if let Err(e) = client.batch_execute(trimmed).await {
+                                let preview: String = trimmed.chars().take(500).collect();
+                                return Err(format!(
+                                    "Failed executing SQL statement {}: {}\nStatement preview:\n{}",
+                                    statement_count + 1,
+                                    e,
+                                    preview
+                                ));
+                            }
+                            statement_count += 1;
+                        }
+                    }
+                    statement.clear();
+                    continue;
+                }
+
+                statement.push(ch);
+            }
+        }
+    }
+
+    if in_copy {
+        if !copy_line_buffer.is_empty() {
+            let line = copy_line_buffer.trim_end_matches('\r');
+            if line == "\\." {
+                if let Some(mut sink) = copy_sink.take() {
+                    match sink.as_mut().finish().await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let detail = format_pg_error(&e);
+                            return Err(format!("Failed to finalize COPY: {}", detail));
+                        }
+                    }
+                }
+                in_copy = false;
+            }
+        }
+    }
+
+    if in_copy {
+        return Err("COPY data did not terminate with \\.".to_string());
+    }
+
+    if !statement.trim().is_empty() {
+        let trimmed = statement.trim();
+        let trimmed_lower = trimmed.to_lowercase();
+        if trimmed_lower.starts_with("copy") && trimmed_lower.contains("from stdin") {
+            return Err("COPY statement missing data section".to_string());
+        }
+
+        if let Err(e) = client.batch_execute(trimmed).await {
+            let preview: String = trimmed.chars().take(500).collect();
+            return Err(format!(
+                "Failed executing SQL statement {}: {}\nStatement preview:\n{}",
+                statement_count + 1,
+                e,
+                preview
+            ));
+        }
+        statement_count += 1;
+    }
+
+    let message = Some(format!(
+        "Executed {} ({} statement{})",
+        file_name,
+        statement_count,
+        if statement_count == 1 { "" } else { "s" }
+    ));
+
+    Ok(QueryResult {
+        columns: vec![],
+        rows: vec![],
+        rows_affected: None,
         message,
     })
 }

@@ -22,6 +22,7 @@ import {
   ListAlt,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/tauri";
+import { open } from "@tauri-apps/api/dialog";
 
 function LeftPanelFixed({
   servers,
@@ -86,6 +87,39 @@ function LeftPanelFixed({
     if (serverMenuState?.server && onRefreshServer) {
       await onRefreshServer(serverMenuState.server);
     }
+    handleCloseServerMenu();
+  };
+
+  const handleRunSqlFromFile = async () => {
+    const server = serverMenuState?.server;
+    if (!server) return;
+
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "SQL Files", extensions: ["sql"] }],
+      });
+
+      const filePath = Array.isArray(selected) ? selected[0] : selected;
+      if (!filePath) {
+        handleCloseServerMenu();
+        return;
+      }
+
+      const metadata = await invoke("get_sql_file_metadata", { filePath });
+
+      window.dispatchEvent(
+        new CustomEvent("open-sql-file-tab", {
+          detail: {
+            server,
+            file: metadata,
+          },
+        }),
+      );
+    } catch (error) {
+      console.error("Failed to open SQL file:", error);
+    }
+
     handleCloseServerMenu();
   };
 
@@ -522,7 +556,8 @@ function LeftPanelFixed({
             : undefined
         }
       >
-        <MenuItem onClick={handleRefreshServer}>Refresh</MenuItem>
+        <MenuItem onClick={handleRefreshServer}>Refresh schema</MenuItem>
+        <MenuItem onClick={handleRunSqlFromFile}>Run SQL from file...</MenuItem>
       </Menu>
     </Box>
   );
