@@ -178,6 +178,6 @@ Cargo.lock
 /src-tauri/target/
 /src-tauri/Cargo.lock
 
-# Database files (if temporary)
+# Database files
 data/*.db
 data/*.db-*

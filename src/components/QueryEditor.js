@@ -110,7 +110,7 @@ const QueryEditor = memo(({
   );
 
   const editorPlaceholder = serverId
-    ? "Enter SQL query here...\n\nExamples:\nSELECT * FROM table_name LIMIT 100;\nSHOW TABLES;"
+    ? "Enter SQL query here...\n\nExample:\nSELECT * FROM table_name LIMIT 100;"
     : 'Select a server to start querying';
 
   const completionSource = useMemo(() => {

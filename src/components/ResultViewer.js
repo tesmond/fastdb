@@ -52,6 +52,11 @@ const ResultViewer = memo(
       };
     }, [results]);
 
+    const message = useMemo(() => {
+      if (!results || !results.message) return null;
+      return results.message;
+    }, [results]);
+
     const shouldShowRowsAffected = useMemo(() => {
       if (rowsAffected === null || rowsAffected === undefined) return false;
       return rows.length === 0;
@@ -274,6 +279,21 @@ const ResultViewer = memo(
                   {errorMessage}
                 </Typography>
               </Box>
+            )}
+          </Alert>
+        </Box>
+      );
+    }
+
+    if (message && rows.length === 0) {
+      return (
+        <Box sx={{ p: 2 }}>
+          <Alert severity="success" icon={<CheckCircle />}>
+            <Typography variant="subtitle2">{message}</Typography>
+            {executionTime !== null && (
+              <Typography variant="body2">
+                Completed in {executionTime} ms
+              </Typography>
             )}
           </Alert>
         </Box>
