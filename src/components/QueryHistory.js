@@ -469,4 +469,6 @@ const QueryHistory = memo(({
 
 QueryHistory.displayName = 'QueryHistory';
 
+export { formatRelativeTime, truncateSql, highlightMatch };
+
 export default QueryHistory;

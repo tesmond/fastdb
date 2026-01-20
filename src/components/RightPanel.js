@@ -25,6 +25,18 @@ import QueryEditor from "./QueryEditor";
 import ResultViewer from "./ResultViewer";
 import QueryHistory from "./QueryHistory";
 
+export const formatBytes = (bytes) => {
+  if (bytes === null || bytes === undefined) return "Unknown";
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const value = bytes / Math.pow(k, i);
+  const raw = value.toFixed(value >= 10 || i === 0 ? 0 : 1);
+  const formatted = raw.endsWith(".0") ? raw.slice(0, -2) : raw;
+  return `${formatted} ${sizes[i]}`;
+};
+
 const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
   const [tabs, setTabs] = useState([]);
   const [activeTab, setActiveTab] = useState(0);
@@ -34,16 +46,6 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     columns: [],
     indexes: [],
   });
-
-  const formatBytes = useCallback((bytes) => {
-    if (bytes === null || bytes === undefined) return "Unknown";
-    if (bytes === 0) return "0 B";
-    const k = 1024;
-    const sizes = ["B", "KB", "MB", "GB", "TB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    const value = bytes / Math.pow(k, i);
-    return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${sizes[i]}`;
-  }, []);
 
   useEffect(() => {
     let unlistenPromise;
