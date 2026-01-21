@@ -84,6 +84,7 @@ pub struct AutocompleteItems {
     pub tables: Vec<String>,
     pub columns: Vec<String>,
     pub indexes: Vec<String>,
+    pub schemas: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -548,10 +549,21 @@ pub fn get_autocomplete_items(server_id: &str) -> Result<AutocompleteItems, rusq
         .query_map([server_id], |row| row.get(0))?
         .collect::<Result<Vec<String>, _>>()?;
 
+    let mut schemas_stmt = conn.prepare_cached(
+        "SELECT name
+         FROM schemas
+         WHERE server_id = ?
+         ORDER BY name",
+    )?;
+    let schemas = schemas_stmt
+        .query_map([server_id], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+
     Ok(AutocompleteItems {
         tables,
         columns,
         indexes,
+        schemas,
     })
 }
 

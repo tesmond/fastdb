@@ -26,7 +26,7 @@ const QueryEditor = memo(({
   serverId,
   serverName,
   initialSql = '',
-  autocompleteItems = { tables: [], columns: [], indexes: [] },
+  autocompleteItems = { tables: [], columns: [], indexes: [], schemas: [] },
   onExecute,
   onCancel,
   onClear,
@@ -187,6 +187,11 @@ const QueryEditor = memo(({
     });
     autocompleteItems.indexes.forEach((name) => {
       items.push({ label: name, type: 'keyword', info: 'index' });
+    });
+
+    // Include schema names in autocomplete
+    autocompleteItems.schemas.forEach((name) => {
+      items.push({ label: name, type: 'namespace', info: 'schema' });
     });
 
     return completeFromList(items);

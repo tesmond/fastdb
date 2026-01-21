@@ -49,6 +49,7 @@ function LeftPanelFixed({
   const [serverMenuState, setServerMenuState] = useState(null);
   const [schemaMenuState, setSchemaMenuState] = useState(null);
   const [tableMenuState, setTableMenuState] = useState(null);
+  const [databaseMenuState, setDatabaseMenuState] = useState(null);
 
   const getDatabaseName = (schema, server) =>
     schema.database_name || server.database || "";
@@ -100,6 +101,21 @@ function LeftPanelFixed({
     setSchemaMenuState(null);
   };
 
+  const handleDatabaseContextMenu = (event, server, databaseName) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setDatabaseMenuState({
+      mouseX: event.clientX - 2,
+      mouseY: event.clientY - 4,
+      server,
+      databaseName,
+    });
+  };
+
+  const handleCloseDatabaseMenu = () => {
+    setDatabaseMenuState(null);
+  };
+
   const handleTableContextMenu = (event, table, schema, server) => {
     event.preventDefault();
     event.stopPropagation();
@@ -121,6 +137,22 @@ function LeftPanelFixed({
 
     window.dispatchEvent(
       new CustomEvent("open-export-table-tab", {
+        detail: {
+          server: tableMenuState.server,
+          schema: tableMenuState.schema,
+          table: tableMenuState.table,
+        },
+      }),
+    );
+
+    handleCloseTableMenu();
+  };
+
+  const handleQueryTable = () => {
+    if (!tableMenuState?.table || !tableMenuState?.schema || !tableMenuState?.server) return;
+
+    window.dispatchEvent(
+      new CustomEvent("open-query-table-tab", {
         detail: {
           server: tableMenuState.server,
           schema: tableMenuState.schema,
@@ -200,6 +232,21 @@ function LeftPanelFixed({
     }
 
     handleCloseServerMenu();
+  };
+
+  const handleQueryDatabase = () => {
+    if (!databaseMenuState?.server) return;
+
+    window.dispatchEvent(
+      new CustomEvent("open-query-database-tab", {
+        detail: {
+          server: databaseMenuState.server,
+          databaseName: databaseMenuState.databaseName,
+        },
+      }),
+    );
+
+    handleCloseDatabaseMenu();
   };
 
   const handleDatabaseClick = (serverId, databaseName) => {
@@ -390,6 +437,7 @@ function LeftPanelFixed({
                         onClick={() =>
                           handleDatabaseClick(server.id, databaseName)
                         }
+                        onContextMenu={(event) => handleDatabaseContextMenu(event, server, databaseName)}
                       >
                         <Storage sx={{ mr: 1 }} />
                         <ListItemText primary={displayDatabaseName} secondary="database" />
@@ -666,6 +714,20 @@ function LeftPanelFixed({
         <MenuItem onClick={handleQuerySchema}>Query schema</MenuItem>
         <MenuItem onClick={handleExportSchema}>Export SQL...</MenuItem>
       </Menu>
+
+      <Menu
+        open={Boolean(databaseMenuState)}
+        onClose={handleCloseDatabaseMenu}
+        anchorReference="anchorPosition"
+        anchorPosition={
+          databaseMenuState
+            ? { top: databaseMenuState.mouseY, left: databaseMenuState.mouseX }
+            : undefined
+        }
+      >
+        <MenuItem onClick={handleQueryDatabase}>Query database</MenuItem>
+      </Menu>
+
       <Menu
         open={Boolean(tableMenuState)}
         onClose={handleCloseTableMenu}
@@ -676,6 +738,7 @@ function LeftPanelFixed({
             : undefined
         }
       >
+        <MenuItem onClick={handleQueryTable}>Query table</MenuItem>
         <MenuItem onClick={handleExportTable}>Export SQL...</MenuItem>
       </Menu>
     </Box>
