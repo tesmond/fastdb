@@ -1,4 +1,5 @@
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime, PoolConfig};
+use deadpool::managed::QueueMode;
 use tokio_postgres::{NoTls, CancelToken};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ pub async fn get_or_create_pool(
     cfg.pool = Some(PoolConfig {
         max_size: 10,
         timeouts: deadpool_postgres::Timeouts::default(),
+        queue_mode: QueueMode::Fifo,
     });
 
     let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)?;

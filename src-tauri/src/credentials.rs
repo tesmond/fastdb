@@ -31,7 +31,7 @@ pub fn store_password(
     };
 
     unsafe {
-        CredWriteW(&mut credential, 0).ok()?;
+        CredWriteW(&mut credential, 0).map_err(|e| format!("Failed to write credential: {}", e))?;
     }
     Ok(())
 }
@@ -43,11 +43,11 @@ pub fn retrieve_password(target: &str) -> Result<String, Box<dyn std::error::Err
     unsafe {
         CredReadW(
             PCWSTR::from_raw(target_wide.as_ptr()),
-            CRED_TYPE_GENERIC.0 as u32,
+            CRED_TYPE_GENERIC,
             0,
             &mut credential,
         )
-        .ok()?;
+        .map_err(|e| format!("Failed to read credential: {}", e))?;
 
         if credential.is_null() {
             return Err("Credential not found".into());
@@ -69,10 +69,10 @@ pub fn delete_password(target: &str) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         CredDeleteW(
             PCWSTR::from_raw(target_wide.as_ptr()),
-            CRED_TYPE_GENERIC.0 as u32,
+            CRED_TYPE_GENERIC,
             0,
         )
-        .ok()?;
+        .map_err(|e| format!("Failed to delete credential: {}", e))?;
     }
     Ok(())
 }
