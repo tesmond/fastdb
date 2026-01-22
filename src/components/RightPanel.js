@@ -45,6 +45,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     tables: [],
     columns: [],
     indexes: [],
+    schemas: [],
   });
 
   useEffect(() => {
@@ -62,7 +63,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     if (selectedServer?.id) {
       loadAutocomplete(selectedServer.id);
     } else {
-      setAutocompleteItems({ tables: [], columns: [], indexes: [] });
+      setAutocompleteItems({ tables: [], columns: [], indexes: [], schemas: [] });
     }
 
     unlistenPromise = listen("schema_updated", (event) => {
@@ -218,6 +219,76 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     window.addEventListener("open-query-schema-tab", handleOpenQuerySchemaTab);
     return () => {
       window.removeEventListener("open-query-schema-tab", handleOpenQuerySchemaTab);
+    };
+  }, []);
+
+  // Open a query tab scoped to a database (no default schema)
+  useEffect(() => {
+    const handleOpenQueryDatabaseTab = (event) => {
+      const { server, databaseName } = event.detail || {};
+      if (!server) return;
+
+      const newTab = {
+        id: Date.now(),
+        type: "query",
+        serverId: server.id,
+        serverName: server.name,
+        databaseName: databaseName,
+        sql: "",
+        results: null,
+        error: null,
+        isExecuting: false,
+        isCancelling: false,
+        queryId: null,
+        executionTime: null,
+        rowsAffected: null,
+      };
+
+      setTabs((prev) => {
+        const newTabs = [...prev, newTab];
+        setActiveTab(newTabs.length - 1);
+        return newTabs;
+      });
+    };
+
+    window.addEventListener("open-query-database-tab", handleOpenQueryDatabaseTab);
+    return () => {
+      window.removeEventListener("open-query-database-tab", handleOpenQueryDatabaseTab);
+    };
+  }, []);
+
+  // Open a query tab for a specific table and default the schema and a sample SELECT
+  useEffect(() => {
+    const handleOpenQueryTableTab = (event) => {
+      const { server, schema, table } = event.detail || {};
+      if (!server || !schema || !table) return;
+
+      const newTab = {
+        id: Date.now(),
+        type: "query",
+        serverId: server.id,
+        serverName: server.name,
+        schemaName: schema.name,
+        sql: `SELECT * FROM ${schema.name}.${table.name} LIMIT 100;`,
+        results: null,
+        error: null,
+        isExecuting: false,
+        isCancelling: false,
+        queryId: null,
+        executionTime: null,
+        rowsAffected: null,
+      };
+
+      setTabs((prev) => {
+        const newTabs = [...prev, newTab];
+        setActiveTab(newTabs.length - 1);
+        return newTabs;
+      });
+    };
+
+    window.addEventListener("open-query-table-tab", handleOpenQueryTableTab);
+    return () => {
+      window.removeEventListener("open-query-table-tab", handleOpenQueryTableTab);
     };
   }, []);
 

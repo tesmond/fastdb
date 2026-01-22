@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, memo } from "react";
+import React, { useState, useCallback, useMemo, memo, useEffect, useRef } from "react";
 import {
   Box,
   Paper,
@@ -39,7 +39,8 @@ const ResultViewer = memo(
   }) => {
     const [searchTerm, setSearchTerm] = useState("");
     const [filterAnchor, setFilterAnchor] = useState(null);
-    const [copiedCell, setCopiedCell] = useState(null);
+    // track copied and hovered cells by key to avoid matching by value (null/undefined)
+    const [copiedKey, setCopiedKey] = useState(null);
 
     // Parse results
     const { columns, rows } = useMemo(() => {
@@ -74,10 +75,14 @@ const ResultViewer = memo(
       );
     }, [rows, searchTerm]);
 
-    const handleCopyCell = useCallback((value) => {
-      navigator.clipboard.writeText(String(value));
-      setCopiedCell(value);
-      setTimeout(() => setCopiedCell(null), 2000);
+    const handleCopyCell = useCallback((key, value) => {
+      try {
+        navigator.clipboard.writeText(String(value));
+      } catch (e) {
+        // ignore clipboard errors (e.g., insecure context)
+      }
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 2000);
     }, []);
 
     const handleExport = useCallback(() => {
@@ -97,8 +102,11 @@ const ResultViewer = memo(
         ),
       ].join("\n");
 
+      // Prepend UTF-8 BOM so Excel on Windows recognizes UTF-8 encoding
+      const bom = "\uFEFF";
+
       // Download
-      const blob = new Blob([csvContent], { type: "text/csv" });
+      const blob = new Blob([bom + csvContent], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -123,6 +131,26 @@ const ResultViewer = memo(
       if (typeof value === "object") return JSON.stringify(value);
       return String(value);
     }, []);
+
+    const tableMinWidth = useMemo(() => {
+      const colMin = 150;
+      return 60 + columns.length * colMin;
+    }, [columns.length]);
+
+    // track measured container width so virtual list can expand
+    const listContainerRef = useRef(null);
+    const [containerWidth, setContainerWidth] = useState(null);
+
+    useEffect(() => {
+      function updateWidth() {
+        if (listContainerRef.current && listContainerRef.current.clientWidth)
+          setContainerWidth(listContainerRef.current.clientWidth);
+        else setContainerWidth(window.innerWidth);
+      }
+      updateWidth();
+      window.addEventListener("resize", updateWidth);
+      return () => window.removeEventListener("resize", updateWidth);
+    }, [columns.length, tableMinWidth]);
 
     // Row renderer for virtualization
     const Row = useCallback(
@@ -160,9 +188,11 @@ const ResultViewer = memo(
             </Box>
 
             {/* Data cells */}
-            {columns.map((col, colIndex) => (
+            {columns.map((col, colIndex) => {
+              const cellKey = `${index}-${colIndex}`;
+              return (
               <Box
-                key={colIndex}
+                key={cellKey}
                 sx={{
                   minWidth: 150,
                   maxWidth: 300,
@@ -176,8 +206,10 @@ const ResultViewer = memo(
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
+                  position: "relative",
+                  "&:hover .copyIcon": { opacity: 1 },
                 }}
-                onClick={() => handleCopyCell(row[col.name])}
+                onClick={() => handleCopyCell(cellKey, row[col.name])}
                 title={`Click to copy: ${row[col.name]}`}
               >
                 <Typography
@@ -190,17 +222,21 @@ const ResultViewer = memo(
                 >
                   {formatCellValue(row[col.name])}
                 </Typography>
-                {copiedCell === row[col.name] && (
-                  <CheckCircle
-                    sx={{ ml: 1, fontSize: 16, color: "success.main" }}
-                  />
+                <ContentCopy
+                  className="copyIcon"
+                  sx={{ ml: 1, fontSize: 16, color: "text.secondary", opacity: 0, transition: "opacity 0.12s", pointerEvents: "none" }}
+                  style={copiedKey === cellKey ? { display: "none" } : {}}
+                />
+                {copiedKey === cellKey && (
+                  <CheckCircle sx={{ ml: 1, fontSize: 16, color: "success.main" }} />
                 )}
               </Box>
-            ))}
+              );
+            })}
           </Box>
         );
       },
-      [filteredRows, columns, copiedCell, handleCopyCell, formatCellValue],
+      [filteredRows, columns, copiedKey, handleCopyCell, formatCellValue],
     );
 
     // Loading state
@@ -452,80 +488,83 @@ const ResultViewer = memo(
           </Box>
         </Box>
 
-        {/* Table Header */}
-        <Box
-          sx={{
-            display: "flex",
-            borderBottom: 2,
-            borderColor: "divider",
-            backgroundColor: "grey.100",
-          }}
-        >
-          {/* Row number header */}
-          <Box
-            sx={{
-              width: 60,
-              minWidth: 60,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              borderRight: 1,
-              borderColor: "divider",
-              py: 1,
-              fontWeight: 600,
-              fontSize: "0.875rem",
-            }}
-          >
-            #
-          </Box>
-
-          {/* Column headers */}
-          {columns.map((col, index) => (
+        {/* Table header + body in a shared horizontal scroller so columns align */}
+        <Box sx={{ flex: 1, overflowX: "auto" }}>
+          <Box sx={{ minWidth: tableMinWidth }}>
+            {/* Table Header */}
             <Box
-              key={index}
               sx={{
-                minWidth: 150,
-                maxWidth: 300,
-                flex: 1,
                 display: "flex",
-                alignItems: "center",
-                px: 2,
-                py: 1,
-                borderRight: index < columns.length - 1 ? 1 : 0,
+                borderBottom: 2,
                 borderColor: "divider",
+                backgroundColor: "grey.100",
               }}
             >
-              <Tooltip title={col.type || "unknown type"}>
-                <Typography
-                  variant="body2"
-                  fontWeight={600}
+              {/* Row number header */}
+              <Box
+                sx={{
+                  width: 60,
+                  minWidth: 60,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRight: 1,
+                  borderColor: "divider",
+                  py: 1,
+                  fontWeight: 600,
+                  fontSize: "0.875rem",
+                }}
+              >
+                #
+              </Box>
+
+              {/* Column headers */}
+              {columns.map((col, index) => (
+                <Box
+                  key={index}
                   sx={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    minWidth: 150,
+                    maxWidth: 300,
+                    flex: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    px: 2,
+                    py: 1,
+                    borderRight: index < columns.length - 1 ? 1 : 0,
+                    borderColor: "divider",
                   }}
                 >
-                  {col.name}
-                </Typography>
-              </Tooltip>
+                  <Tooltip title={col.type || "unknown type"}>
+                    <Typography
+                      variant="body2"
+                      fontWeight={600}
+                      sx={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {col.name}
+                    </Typography>
+                  </Tooltip>
+                </Box>
+              ))}
             </Box>
-          ))}
-        </Box>
 
-        {/* Virtualized Table Body */}
-        {filteredRows.length > 0 ? (
-          <Box sx={{ flex: 1, overflow: "hidden" }}>
-            <FixedSizeList
-              height={500}
-              itemCount={filteredRows.length}
-              itemSize={40}
-              width="100%"
-              overscanCount={5}
-            >
-              {Row}
-            </FixedSizeList>
-          </Box>
-        ) : (
+            {/* Virtualized Table Body */}
+            {filteredRows.length > 0 ? (
+              <Box sx={{ flex: 1, overflow: "hidden" }} ref={listContainerRef}>
+                <FixedSizeList
+                  height={500}
+                  itemCount={filteredRows.length}
+                  itemSize={40}
+                  width={Math.max(tableMinWidth, containerWidth || tableMinWidth)}
+                  overscanCount={5}
+                >
+                  {Row}
+                </FixedSizeList>
+              </Box>
+            ) : (
           <Box
             sx={{
               flex: 1,
@@ -555,6 +594,8 @@ const ResultViewer = memo(
             </MenuItem>
           ))}
         </Menu>
+          </Box>
+        </Box>
       </Paper>
     );
   },
