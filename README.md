@@ -148,6 +148,19 @@ npm run build
 cargo fmt
 ```
 
+### Unit Tests
+
+```bash
+# Run unit tests once
+npm test
+
+# Run unit tests in watch mode
+npm run test:watch
+
+# Run unit tests once with coverage
+npm run test:coverage
+```
+
 ### Code Style
 - **Rust:** Follow standard Rust conventions (rustfmt)
 - **JavaScript:** ESLint + Prettier configuration
@@ -168,8 +181,8 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ## 📞 Support
 
-- **Issues:** [GitHub Issues](https://github.com/yourusername/fastdb/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/yourusername/fastdb/discussions)
+- **Issues:** [GitHub Issues](https://github.com/tesmond/fastdb/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/tesmond/fastdb/discussions)
 
 ## 📊 Status
 
