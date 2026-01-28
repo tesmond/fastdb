@@ -19,6 +19,7 @@ import {
   Storage,
   TableChart,
   ViewColumn,
+  Visibility,
   ListAlt,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/tauri";
@@ -652,10 +653,33 @@ function LeftPanelFixed({
                                         )
                                       )}
 
-                                      <ListItem sx={{ pl: 8 }}>
-                                        <ListItemText primary="Views" />
-                                      </ListItem>
-                                      {loadingViews.has(schema.id) ? (
+                                      {(() => {
+                                        const viewList = views[schema.id] || [];
+                                        const hasViews = viewList.length > 0;
+                                        const isViewsEmpty =
+                                          !loadingViews.has(schema.id) && !hasViews;
+
+                                        return (
+                                          <>
+                                            <ListItem
+                                              sx={{
+                                                pl: 8,
+                                                color: isViewsEmpty
+                                                  ? "text.disabled"
+                                                  : "text.primary",
+                                              }}
+                                            >
+                                              <Visibility
+                                                sx={{
+                                                  mr: 1,
+                                                  color: isViewsEmpty
+                                                    ? "text.disabled"
+                                                    : "text.secondary",
+                                                }}
+                                              />
+                                              <ListItemText primary="Views" />
+                                            </ListItem>
+                                            {loadingViews.has(schema.id) ? (
                                         <ListItem sx={{ pl: 10 }}>
                                           <CircularProgress
                                             size={16}
@@ -663,16 +687,20 @@ function LeftPanelFixed({
                                           />
                                           <ListItemText primary="Loading views..." />
                                         </ListItem>
-                                      ) : (
-                                        (views[schema.id] || []).map((view) => (
+                                            ) : (
+                                              viewList.map((view) => (
                                           <ListItem
                                             key={view.id}
                                             sx={{ pl: 10 }}
                                           >
+                                            <Visibility sx={{ mr: 1 }} />
                                             <ListItemText primary={view.name} />
                                           </ListItem>
-                                        ))
-                                      )}
+                                              ))
+                                            )}
+                                          </>
+                                        );
+                                      })()}
                                     </List>
                                   </Collapse>
                                 </React.Fragment>

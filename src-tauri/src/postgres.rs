@@ -12,6 +12,10 @@ static POOLS: once_cell::sync::Lazy<Arc<Mutex<HashMap<String, Pool>>>> =
 static CANCEL_TOKENS: once_cell::sync::Lazy<Arc<Mutex<HashMap<String, CancelToken>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
+fn pool_key(server_id: &str, dbname: &str) -> String {
+    format!("{}::{}", server_id, dbname)
+}
+
 pub async fn get_or_create_pool(
     server_id: &str,
     host: &str,
@@ -21,8 +25,9 @@ pub async fn get_or_create_pool(
     dbname: &str,
 ) -> Result<Pool, Box<dyn std::error::Error>> {
     let mut pools = POOLS.lock().await;
+    let key = pool_key(server_id, dbname);
 
-    if let Some(pool) = pools.get(server_id) {
+    if let Some(pool) = pools.get(&key) {
         return Ok(pool.clone());
     }
 
@@ -42,7 +47,7 @@ pub async fn get_or_create_pool(
     });
 
     let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)?;
-    pools.insert(server_id.to_string(), pool.clone());
+    pools.insert(key, pool.clone());
     Ok(pool)
 }
 
@@ -95,7 +100,7 @@ pub async fn execute_query(
     let pool = {
         let pools = POOLS.lock().await;
         pools
-            .get(server_id)
+            .get(&pool_key(server_id, dbname))
             .cloned()
             .ok_or("Pool not found for this server")?
     };
