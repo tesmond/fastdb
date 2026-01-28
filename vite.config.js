@@ -84,7 +84,6 @@ export default defineConfig({
       ],
       exclude: [
         "src/App.js",
-        "src/App_optimized.js",
         "src/index.js",
         "src/components/LeftPanelFixed.js",
       ],
