@@ -24,6 +24,7 @@ async fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_cached_servers,
+            commands::get_dashboard_metrics,
             commands::connect_to_server,
             commands::execute_query,
             commands::cancel_query,

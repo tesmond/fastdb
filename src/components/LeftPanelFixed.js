@@ -37,6 +37,7 @@ function LeftPanelFixed({
   const [expandedDatabases, setExpandedDatabases] = useState(new Set());
   const [expandedSchemas, setExpandedSchemas] = useState(new Set());
   const [expandedTables, setExpandedTables] = useState(new Set());
+  const [expandedViews, setExpandedViews] = useState(new Set());
   const [expandedColumns, setExpandedColumns] = useState(new Set());
   const [expandedIndexes, setExpandedIndexes] = useState(new Set());
   const [tables, setTables] = useState({});
@@ -235,6 +236,21 @@ function LeftPanelFixed({
     handleCloseServerMenu();
   };
 
+  const handleOpenDashboard = () => {
+    const server = serverMenuState?.server;
+    if (!server) return;
+
+    window.dispatchEvent(
+      new CustomEvent("open-dashboard-tab", {
+        detail: {
+          server,
+        },
+      }),
+    );
+
+    handleCloseServerMenu();
+  };
+
   const handleQueryDatabase = () => {
     if (!databaseMenuState?.server) return;
 
@@ -309,8 +325,9 @@ function LeftPanelFixed({
     }
   };
 
-  const handleTableClick = (table, schema, server) => {
+  const handleTableClick = async (table, schema, server) => {
     const tableKey = getTableKey(schema, server, table);
+    const wasExpanded = expandedTables.has(tableKey);
     setExpandedTables((prev) => {
       const newSet = new Set(prev);
       if (newSet.has(tableKey)) {
@@ -320,6 +337,22 @@ function LeftPanelFixed({
       }
       return newSet;
     });
+
+    if (!wasExpanded && !indexes[table.id]) {
+      setLoadingIndexes((prev) => new Set(prev).add(table.id));
+      try {
+        const indexList = await invoke("get_indexes", { tableId: table.id });
+        setIndexes((prev) => ({ ...prev, [table.id]: indexList }));
+      } catch (error) {
+        console.error("Failed to load indexes:", error);
+      } finally {
+        setLoadingIndexes((prev) => {
+          const newSet = new Set(prev);
+          newSet.delete(table.id);
+          return newSet;
+        });
+      }
+    }
   };
 
   const handleColumnsClick = async (table, schema, server) => {
@@ -380,6 +413,19 @@ function LeftPanelFixed({
         });
       }
     }
+  };
+
+  const handleViewsClick = (schema, server) => {
+    const schemaKey = getSchemaKey(schema, server);
+    setExpandedViews((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(schemaKey)) {
+        newSet.delete(schemaKey);
+      } else {
+        newSet.add(schemaKey);
+      }
+      return newSet;
+    });
   };
 
   return (
@@ -595,24 +641,51 @@ function LeftPanelFixed({
                                                       </List>
                                                     </Collapse>
 
-                                                    <ListItemButton
-                                                      sx={{ pl: 10 }}
-                                                      onClick={() =>
-                                                        handleIndexesClick(
-                                                          table,
-                                                          schema,
-                                                          server
-                                                        )
-                                                      }
-                                                    >
-                                                      <ListAlt sx={{ mr: 1 }} />
-                                                      <ListItemText primary="Indexes" />
-                                                      {expandedIndexes.has(tableKey) ? (
-                                                        <ExpandLess />
-                                                      ) : (
-                                                        <ExpandMore />
-                                                      )}
-                                                    </ListItemButton>
+                                                    {(() => {
+                                                      const indexList = indexes[table.id];
+                                                      const isIndexesLoaded =
+                                                        Array.isArray(indexList);
+                                                      const hasIndexes =
+                                                        isIndexesLoaded && indexList.length > 0;
+                                                      const isIndexesEmpty =
+                                                        isIndexesLoaded && indexList.length === 0;
+                                                      const isIndexesLoading = loadingIndexes.has(table.id);
+                                                      const disableIndexes = isIndexesEmpty || isIndexesLoading;
+
+                                                      return (
+                                                        <ListItemButton
+                                                          sx={{
+                                                            pl: 10,
+                                                            color: disableIndexes
+                                                              ? "text.disabled"
+                                                              : "text.primary",
+                                                          }}
+                                                          disabled={disableIndexes}
+                                                          onClick={() =>
+                                                            handleIndexesClick(
+                                                              table,
+                                                              schema,
+                                                              server
+                                                            )
+                                                          }
+                                                        >
+                                                          <ListAlt
+                                                            sx={{
+                                                              mr: 1,
+                                                              color: disableIndexes
+                                                                ? "text.disabled"
+                                                                : "text.secondary",
+                                                            }}
+                                                          />
+                                                          <ListItemText primary="Indexes" />
+                                                          {expandedIndexes.has(tableKey) ? (
+                                                            <ExpandLess />
+                                                          ) : (
+                                                            <ExpandMore />
+                                                          )}
+                                                        </ListItemButton>
+                                                      );
+                                                    })()}
                                                     <Collapse
                                                       in={expandedIndexes.has(tableKey)}
                                                       timeout="auto"
@@ -658,46 +731,63 @@ function LeftPanelFixed({
                                         const hasViews = viewList.length > 0;
                                         const isViewsEmpty =
                                           !loadingViews.has(schema.id) && !hasViews;
+                                        const schemaKey = getSchemaKey(schema, server);
+                                        const isViewsLoading = loadingViews.has(schema.id);
+                                        const disableViews = isViewsEmpty || isViewsLoading;
 
                                         return (
                                           <>
-                                            <ListItem
+                                            <ListItemButton
                                               sx={{
                                                 pl: 8,
-                                                color: isViewsEmpty
+                                                color: disableViews
                                                   ? "text.disabled"
                                                   : "text.primary",
                                               }}
+                                              disabled={disableViews}
+                                              onClick={() =>
+                                                handleViewsClick(schema, server)
+                                              }
                                             >
                                               <Visibility
                                                 sx={{
                                                   mr: 1,
-                                                  color: isViewsEmpty
+                                                  color: disableViews
                                                     ? "text.disabled"
                                                     : "text.secondary",
                                                 }}
                                               />
                                               <ListItemText primary="Views" />
-                                            </ListItem>
-                                            {loadingViews.has(schema.id) ? (
-                                        <ListItem sx={{ pl: 10 }}>
-                                          <CircularProgress
-                                            size={16}
-                                            sx={{ mr: 1 }}
-                                          />
-                                          <ListItemText primary="Loading views..." />
-                                        </ListItem>
-                                            ) : (
-                                              viewList.map((view) => (
-                                          <ListItem
-                                            key={view.id}
-                                            sx={{ pl: 10 }}
-                                          >
-                                            <Visibility sx={{ mr: 1 }} />
-                                            <ListItemText primary={view.name} />
-                                          </ListItem>
-                                              ))
-                                            )}
+                                              {expandedViews.has(schemaKey) ? (
+                                                <ExpandLess />
+                                              ) : (
+                                                <ExpandMore />
+                                              )}
+                                            </ListItemButton>
+                                            <Collapse
+                                              in={expandedViews.has(schemaKey)}
+                                              timeout="auto"
+                                              unmountOnExit
+                                            >
+                                              <List component="div" disablePadding>
+                                                {isViewsLoading ? (
+                                                  <ListItem sx={{ pl: 10 }}>
+                                                    <CircularProgress
+                                                      size={16}
+                                                      sx={{ mr: 1 }}
+                                                    />
+                                                    <ListItemText primary="Loading views..." />
+                                                  </ListItem>
+                                                ) : (
+                                                  viewList.map((view) => (
+                                                    <ListItem key={view.id} sx={{ pl: 10 }}>
+                                                      <Visibility sx={{ mr: 1 }} />
+                                                      <ListItemText primary={view.name} />
+                                                    </ListItem>
+                                                  ))
+                                                )}
+                                              </List>
+                                            </Collapse>
                                           </>
                                         );
                                       })()}
@@ -727,6 +817,7 @@ function LeftPanelFixed({
         }
       >
         <MenuItem onClick={handleRefreshServer}>Refresh schema</MenuItem>
+        <MenuItem onClick={handleOpenDashboard}>Open dashboard</MenuItem>
         <MenuItem onClick={handleRunSqlFromFile}>Run SQL from file...</MenuItem>
       </Menu>
       <Menu
