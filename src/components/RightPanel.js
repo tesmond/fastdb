@@ -1,4 +1,4 @@
-import React, { useState, useCallback, memo, useEffect } from "react";
+import React, { useState, useCallback, memo, useEffect, useRef } from "react";
 import {
   Box,
   Tabs,
@@ -16,11 +16,16 @@ import {
   CircularProgress,
   Checkbox,
   FormControlLabel,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
 } from "@mui/material";
 import { Add, Close } from "@mui/icons-material";
-import { invoke } from "@tauri-apps/api/tauri";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { save } from "@tauri-apps/api/dialog";
+import { save } from "@tauri-apps/plugin-dialog";
 import QueryEditor from "./QueryEditor";
 import ResultViewer from "./ResultViewer";
 import QueryHistory from "./QueryHistory";
@@ -70,11 +75,13 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
       if (event?.payload?.serverId === selectedServer?.id) {
         loadAutocomplete(selectedServer.id);
       }
+    }).catch((err) => {
+      console.warn("Failed to listen for schema_updated:", err);
     });
 
     return () => {
       if (unlistenPromise) {
-        unlistenPromise.then((fn) => fn());
+        unlistenPromise.then((fn) => fn && fn()).catch(() => {});
       }
     };
   }, [selectedServer]);
@@ -198,6 +205,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
         type: "query",
         serverId: server.id,
         serverName: server.name,
+        databaseName: schema.database_name || server.database || null,
         schemaName: schema.name,
         sql: "",
         results: null,
@@ -233,7 +241,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
         type: "query",
         serverId: server.id,
         serverName: server.name,
-        databaseName: databaseName,
+        databaseName: databaseName || server.database || null,
         sql: "",
         results: null,
         error: null,
@@ -268,6 +276,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
         type: "query",
         serverId: server.id,
         serverName: server.name,
+        databaseName: schema.database_name || server.database || null,
         schemaName: schema.name,
         sql: `SELECT * FROM ${schema.name}.${table.name} LIMIT 100;`,
         results: null,
@@ -292,6 +301,238 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     };
   }, []);
 
+  useEffect(() => {
+    const handleOpenDashboardTab = (event) => {
+      const { server } = event.detail || {};
+      if (!server) return;
+
+      const newTab = {
+        id: Date.now(),
+        type: "dashboard",
+        serverId: server.id,
+        serverName: server.name,
+        databaseName: server.database || null,
+      };
+
+      setTabs((prev) => {
+        const newTabs = [...prev, newTab];
+        setActiveTab(newTabs.length - 1);
+        return newTabs;
+      });
+    };
+
+    window.addEventListener("open-dashboard-tab", handleOpenDashboardTab);
+    return () => {
+      window.removeEventListener("open-dashboard-tab", handleOpenDashboardTab);
+    };
+  }, []);
+
+  const DashboardPanel = ({ serverId, serverName, databaseName }) => {
+    const [activeConnections, setActiveConnections] = useState(null);
+    const [transactionsPerSecond, setTransactionsPerSecond] = useState(null);
+    const [connections, setConnections] = useState([]);
+    const [lastUpdated, setLastUpdated] = useState(null);
+    const [error, setError] = useState(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const lastSampleRef = useRef({ totalTransactions: null, timestamp: null });
+    const tpsHistoryRef = useRef([]);
+    const maxHistoryMs = 15 * 60 * 1000;
+
+    const loadMetrics = useCallback(async () => {
+      try {
+        const result = await invoke("get_dashboard_metrics", { serverId });
+        const now = Date.now();
+        const totalTransactions = result?.totalTransactions ?? null;
+
+        setActiveConnections(result?.activeConnections ?? null);
+        setConnections(result?.connections || []);
+
+        if (
+          lastSampleRef.current.totalTransactions !== null &&
+          lastSampleRef.current.timestamp !== null &&
+          totalTransactions !== null
+        ) {
+          const elapsedSeconds =
+            (now - lastSampleRef.current.timestamp) / 1000;
+          const delta = totalTransactions - lastSampleRef.current.totalTransactions;
+          const tps = elapsedSeconds > 0 ? delta / elapsedSeconds : 0;
+          setTransactionsPerSecond(tps);
+          tpsHistoryRef.current = [
+            ...tpsHistoryRef.current,
+            { timestamp: now, value: tps },
+          ].filter((point) => now - point.timestamp <= maxHistoryMs);
+        }
+
+        lastSampleRef.current = {
+          totalTransactions,
+          timestamp: now,
+        };
+
+        setLastUpdated(now);
+        setError(null);
+      } catch (err) {
+        setError(err?.toString?.() || String(err));
+      } finally {
+        setIsLoading(false);
+      }
+    }, [serverId]);
+
+    useEffect(() => {
+      let isMounted = true;
+
+      const run = async () => {
+        if (!isMounted) return;
+        await loadMetrics();
+      };
+
+      run();
+      const interval = setInterval(run, 1000);
+
+      return () => {
+        isMounted = false;
+        clearInterval(interval);
+      };
+    }, [loadMetrics]);
+
+    const formatTps = (value) => {
+      if (value === null || Number.isNaN(value)) return "–";
+      return value.toFixed(2);
+    };
+
+    const history = tpsHistoryRef.current;
+    const chartWidth = 900;
+    const chartHeight = 180;
+    const padding = 24;
+    const points = history.map((point) => point.value);
+    const maxValue = points.length > 0 ? Math.max(...points, 1) : 1;
+    const minValue = 0;
+    const timeStart = history.length > 0 ? history[0].timestamp : Date.now();
+    const timeEnd = history.length > 0 ? history[history.length - 1].timestamp : Date.now();
+    const timeSpan = Math.max(timeEnd - timeStart, 1);
+    const getX = (timestamp) =>
+      padding + ((timestamp - timeStart) / timeSpan) * (chartWidth - padding * 2);
+    const getY = (value) =>
+      padding + ((maxValue - value) / (maxValue - minValue || 1)) * (chartHeight - padding * 2);
+    const path = history
+      .map((point, index) =>
+        `${index === 0 ? "M" : "L"} ${getX(point.timestamp)} ${getY(point.value)}`,
+      )
+      .join(" ");
+
+    return (
+      <Box
+        sx={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          gap: 2,
+          p: 2,
+          overflow: "auto",
+        }}
+      >
+        <Box>
+          <Typography variant="h6">Dashboard</Typography>
+          <Typography variant="caption" color="text.secondary">
+            {serverName}
+            {databaseName ? ` • ${databaseName}` : ""}
+          </Typography>
+        </Box>
+
+        {error ? (
+          <Paper sx={{ p: 2, border: 1, borderColor: "error.main" }}>
+            <Typography color="error">{error}</Typography>
+          </Paper>
+        ) : null}
+
+        <Paper
+          sx={{
+            border: 1,
+            borderColor: "divider",
+            p: 2,
+          }}
+        >
+          <Typography variant="subtitle1" sx={{ mb: 1 }}>
+            Transactions per second (last 15 minutes)
+          </Typography>
+          <Box sx={{ width: "100%", overflowX: "auto" }}>
+            <svg
+              width="100%"
+              height={chartHeight}
+              viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+              preserveAspectRatio="none"
+            >
+              <rect
+                x="0"
+                y="0"
+                width={chartWidth}
+                height={chartHeight}
+                fill="#fafafa"
+                stroke="#e0e0e0"
+              />
+              {history.length > 1 ? (
+                <path d={path} fill="none" stroke="#1976d2" strokeWidth="2" />
+              ) : null}
+            </svg>
+          </Box>
+          <Typography variant="caption" color="text.secondary">
+            Current TPS: {isLoading ? "…" : formatTps(transactionsPerSecond)}
+          </Typography>
+        </Paper>
+
+        <Paper
+          sx={{
+            border: 1,
+            borderColor: "divider",
+            p: 2,
+          }}
+        >
+          <Typography variant="subtitle1" sx={{ mb: 1 }}>
+            Active connections ({isLoading ? "…" : activeConnections ?? "–"})
+          </Typography>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>User</TableCell>
+                <TableCell>Executing SQL</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {connections.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={2} align="center">
+                    {isLoading ? "Loading..." : "No active connections"}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                connections.map((connection, index) => (
+                  <TableRow key={`${connection.user}-${index}`}>
+                    <TableCell>{connection.user}</TableCell>
+                    <TableCell
+                      sx={{
+                        maxWidth: 600,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {connection.query}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Paper>
+
+        <Typography variant="caption" color="text.secondary">
+          {lastUpdated
+            ? `Last updated ${new Date(lastUpdated).toLocaleTimeString()}`
+            : ""}
+        </Typography>
+      </Box>
+    );
+  };
+
   // Create a new query tab
   const handleNewTab = useCallback(() => {
     if (!selectedServer) return;
@@ -301,6 +542,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
       type: "query",
       serverId: selectedServer.id,
       serverName: selectedServer.name,
+      databaseName: selectedServer.database || null,
       sql: "",
       results: null,
       error: null,
@@ -341,6 +583,44 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     setActiveTab(newValue);
   }, []);
 
+  const stripSqlIdentifier = useCallback((value) => {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      return trimmed.slice(1, -1).replace(/""/g, '"');
+    }
+    return trimmed;
+  }, []);
+
+  const parseEditableTableInfo = useCallback(
+    (sql, fallbackSchemaName) => {
+      if (!sql) return null;
+      const normalized = sql.replace(/\s+/g, ' ').trim();
+      const hasJoin = /\bjoin\b/i.test(normalized);
+      if (hasJoin) return null;
+
+      const fromMatch = normalized.match(
+        /\bfrom\s+((?:"[^"]+"|[A-Za-z0-9_]+)(?:\s*\.\s*(?:"[^"]+"|[A-Za-z0-9_]+))?)/i,
+      );
+      if (!fromMatch) return null;
+
+      const rawRef = fromMatch[1];
+      if (rawRef.includes(',')) return null;
+
+      const parts = rawRef.split('.').map((part) => stripSqlIdentifier(part));
+      if (parts.length === 1) {
+        if (!fallbackSchemaName) return null;
+        return { schemaName: fallbackSchemaName, tableName: parts[0] };
+      }
+
+      if (parts.length === 2) {
+        return { schemaName: parts[0], tableName: parts[1] };
+      }
+
+      return null;
+    },
+    [stripSqlIdentifier],
+  );
+
   // Execute query for a tab
   const handleExecute = useCallback(
     async (sql) => {
@@ -375,9 +655,33 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
           sql: sql.trim(),
           queryId,
           schemaName: currentTab.schemaName || null,
+          databaseName: currentTab.databaseName || null,
         });
 
         const executionTime = Date.now() - startTime;
+
+        let editableInfo = null;
+        if (result?.rows?.length && result?.columns?.length) {
+          const tableInfo = parseEditableTableInfo(sql, currentTab.schemaName);
+          if (tableInfo?.schemaName && tableInfo?.tableName) {
+            try {
+              const primaryKeyColumns = await invoke("get_primary_key_columns", {
+                serverId: currentTab.serverId,
+                databaseName: currentTab.databaseName || null,
+                schemaName: tableInfo.schemaName,
+                tableName: tableInfo.tableName,
+              });
+
+              editableInfo = {
+                ...tableInfo,
+                databaseName: currentTab.databaseName || null,
+                primaryKeyColumns: primaryKeyColumns || [],
+              };
+            } catch (pkError) {
+              console.error("Failed to load primary key info:", pkError);
+            }
+          }
+        }
 
         // Update tab with results
         setTabs((prev) =>
@@ -393,6 +697,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   queryId: null,
                   executionTime,
                   rowsAffected: result?.rowsAffected || null,
+                  editableInfo,
                 }
               : tab,
           ),
@@ -423,13 +728,14 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   isCancelling: false,
                   queryId: null,
                   executionTime,
+                  editableInfo: null,
                 }
               : tab,
           ),
         );
       }
     },
-    [tabs, activeTab, onSchemaRefresh],
+    [tabs, activeTab, onSchemaRefresh, parseEditableTableInfo],
   );
 
   const handleCancel = useCallback(async () => {
@@ -453,11 +759,87 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     }
   }, [tabs, activeTab]);
 
+  const quoteSqlIdentifier = useCallback((value) => {
+    return `"${String(value).replace(/"/g, '""')}"`;
+  }, []);
+
+  const formatSqlLiteral = useCallback((value, originalValue) => {
+    if (value === null || value === undefined) return "NULL";
+
+    const raw = String(value);
+    if (raw.trim().toLowerCase() === "null") return "NULL";
+
+    if (typeof originalValue === "number") {
+      const numeric = Number(raw);
+      if (!Number.isNaN(numeric)) return String(numeric);
+    }
+
+    if (typeof originalValue === "boolean") {
+      const lowered = raw.trim().toLowerCase();
+      if (lowered === "true" || lowered === "false") return lowered;
+    }
+
+    const escaped = raw.replace(/'/g, "''");
+    return `'${escaped}'`;
+  }, []);
+
+  const handleSaveEdits = useCallback(
+    async ({ tableName, schemaName, databaseName, primaryKeyColumns, updates }) => {
+      const active = tabs[activeTab];
+      if (!active?.serverId) return;
+      if (!tableName || !schemaName || !primaryKeyColumns?.length) return;
+
+      const qualifiedTable = `${quoteSqlIdentifier(schemaName)}.${quoteSqlIdentifier(tableName)}`;
+      const statements = updates
+        .map(({ row, changes }) => {
+          const setClauses = Object.entries(changes).map(
+            ([columnName, value]) =>
+              `${quoteSqlIdentifier(columnName)} = ${formatSqlLiteral(
+                value,
+                row?.[columnName],
+              )}`,
+          );
+
+          const whereClauses = primaryKeyColumns
+            .map((pkName) => {
+              const pkValue = row?.[pkName];
+              if (pkValue === null || pkValue === undefined) {
+                return `${quoteSqlIdentifier(pkName)} IS NULL`;
+              }
+              return `${quoteSqlIdentifier(pkName)} = ${formatSqlLiteral(
+                pkValue,
+                pkValue,
+              )}`;
+            })
+            .filter(Boolean);
+
+          if (!setClauses.length || !whereClauses.length) return null;
+          return `UPDATE ${qualifiedTable} SET ${setClauses.join(", ")} WHERE ${whereClauses.join(" AND ")}`;
+        })
+        .filter(Boolean);
+
+      if (!statements.length) return;
+
+      const sql = `${statements.join(";\n")};`;
+
+      await invoke("execute_query", {
+        serverId: active.serverId,
+        sql,
+        queryId: `${active.id}-edit-${Date.now()}`,
+        schemaName: schemaName || null,
+        databaseName: databaseName || active.databaseName || null,
+      });
+    },
+    [activeTab, formatSqlLiteral, quoteSqlIdentifier, tabs],
+  );
+
   // Clear results for current tab
   const handleClear = useCallback(() => {
     setTabs((prev) =>
       prev.map((tab, index) =>
-        index === activeTab ? { ...tab, results: null, error: null } : tab,
+        index === activeTab
+          ? { ...tab, results: null, error: null, editableInfo: null }
+          : tab,
       ),
     );
   }, [activeTab]);
@@ -482,6 +864,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
       type: "query",
       serverId: selectedServer.id,
       serverName: selectedServer.name,
+      databaseName: selectedServer.database || null,
       sql: sql,
       results: null,
       error: null,
@@ -752,8 +1135,10 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                             ? `Export ${tab.schemaName || "schema"}`
                             : tab.type === "export-table"
                               ? `Export ${tab.tableName || "table"}`
-                            : tab.schemaName
-                              ? `${tab.serverName || "Query"} (${tab.schemaName}) #${index + 1}`
+                              : tab.type === "dashboard"
+                                ? `Dashboard ${tab.serverName || ""}`.trim()
+                            : tab.schemaName || tab.databaseName
+                              ? `${tab.serverName || "Query"} (${tab.databaseName ? `${tab.databaseName}${tab.schemaName ? `.${tab.schemaName}` : ""}` : tab.schemaName}) #${index + 1}`
                               : `${tab.serverName || "Query"} #${index + 1}`}
                       </span>
                       <Box
@@ -950,6 +1335,10 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   isLoading={currentTab.isExecuting}
                   executionTime={currentTab.executionTime}
                   rowsAffected={currentTab.rowsAffected}
+                  editableInfo={currentTab.editableInfo || null}
+                  onSaveEdits={
+                    currentTab.type === "query" ? handleSaveEdits : undefined
+                  }
                 />
               </Box>
             </>
@@ -1059,6 +1448,10 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   isLoading={currentTab.isExecuting}
                   executionTime={currentTab.executionTime}
                   rowsAffected={currentTab.rowsAffected}
+                  editableInfo={currentTab.editableInfo || null}
+                  onSaveEdits={
+                    currentTab.type === "query" ? handleSaveEdits : undefined
+                  }
                 />
               </Box>
             </>
@@ -1161,9 +1554,19 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   isLoading={currentTab.isExecuting}
                   executionTime={currentTab.executionTime}
                   rowsAffected={currentTab.rowsAffected}
+                  editableInfo={currentTab.editableInfo || null}
+                  onSaveEdits={
+                    currentTab.type === "query" ? handleSaveEdits : undefined
+                  }
                 />
               </Box>
             </>
+          ) : currentTab.type === "dashboard" ? (
+            <DashboardPanel
+              serverId={currentTab.serverId}
+              serverName={currentTab.serverName}
+              databaseName={currentTab.databaseName}
+            />
           ) : (
             <>
               {/* Query Editor (Top Half) */}
@@ -1204,6 +1607,10 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   isLoading={currentTab.isExecuting}
                   executionTime={currentTab.executionTime}
                   rowsAffected={currentTab.rowsAffected}
+                  editableInfo={currentTab.editableInfo || null}
+                  onSaveEdits={
+                    currentTab.type === "query" ? handleSaveEdits : undefined
+                  }
                 />
               </Box>
             </>

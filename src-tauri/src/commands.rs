@@ -1,4 +1,4 @@
-use tauri::{command, Window};
+use tauri::{command, Window, Emitter, Error};
 use crate::db::{self, QueryHistory, QueryHistoryEntry};
 use crate::credentials;
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,26 @@ pub struct SqlFileMetadata {
     pub created_at: Option<i64>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct DashboardMetrics {
+    #[serde(rename = "activeConnections")]
+    pub active_connections: i64,
+    #[serde(rename = "totalTransactions")]
+    pub total_transactions: i64,
+    #[serde(rename = "connections")]
+    pub connections: Vec<DashboardConnection>,
+    #[serde(rename = "databaseName")]
+    pub database_name: String,
+    #[serde(rename = "collectedAt")]
+    pub collected_at: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DashboardConnection {
+    pub user: String,
+    pub query: String,
+}
+
 fn system_time_to_epoch_millis(time: SystemTime) -> Option<i64> {
     time.duration_since(UNIX_EPOCH)
         .ok()
@@ -73,6 +93,74 @@ async fn write_str(file: &mut File, value: &str) -> Result<(), String> {
 #[command]
 pub async fn get_cached_servers() -> Result<Vec<db::Server>, String> {
     db::get_servers().map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn get_dashboard_metrics(server_id: String) -> Result<DashboardMetrics, String> {
+    let server = db::get_server_by_id(&server_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Server not found")?;
+
+    let password = credentials::retrieve_password(&server.credential_key)
+        .map_err(|e| format!("Failed to retrieve password: {}", e))?;
+
+    let pool = crate::postgres::get_or_create_pool(
+        &server.id,
+        &server.host,
+        server.port as u16,
+        &server.username,
+        &password,
+        &server.database,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let client = pool.get().await.map_err(|e| e.to_string())?;
+
+    let active_connections_row = client
+        .query_one(
+            "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database()",
+            &[],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let active_connections: i64 = active_connections_row.get(0);
+
+    let connections_rows = client
+        .query(
+            "SELECT usename, query
+             FROM pg_stat_activity
+             WHERE datname = current_database()
+               AND pid <> pg_backend_pid()",
+            &[],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let connections = connections_rows
+        .into_iter()
+        .map(|row| DashboardConnection {
+            user: row.get::<_, String>(0),
+            query: row.get::<_, String>(1),
+        })
+        .collect();
+
+    let total_transactions_row = client
+        .query_one(
+            "SELECT (xact_commit + xact_rollback) FROM pg_stat_database WHERE datname = current_database()",
+            &[],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let total_transactions: i64 = total_transactions_row.get(0);
+
+    Ok(DashboardMetrics {
+        active_connections,
+        total_transactions,
+        connections,
+        database_name: server.database,
+        collected_at: Utc::now().timestamp_millis(),
+    })
 }
 
 #[command]
@@ -134,6 +222,7 @@ pub async fn execute_query(
     sql: String,
     query_id: Option<String>,
     schema_name: Option<String>,
+    database_name: Option<String>,
 ) -> Result<QueryResult, String> {
     let normalized = normalize_sql_head(&sql);
     let is_create_table = normalized.starts_with("create table");
@@ -148,13 +237,17 @@ pub async fn execute_query(
     let password = credentials::retrieve_password(&server.credential_key)
         .map_err(|e| format!("Failed to retrieve password: {}", e))?;
 
+    let target_database = database_name
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| server.database.clone());
+
     let exec_result = crate::postgres::execute_query(
         &server.id,
         &server.host,
         server.port as u16,
         &server.username,
         &password,
-        &server.database,
+        &target_database,
         &sql,
         query_id.as_deref(),
         schema_name.as_deref(),
@@ -269,7 +362,7 @@ pub async fn execute_query(
                         schemas: updated_schemas,
                     },
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e: Error| e.to_string())?;
         }
     }
 
@@ -1170,7 +1263,7 @@ pub async fn refresh_schema(window: Window, server_id: String) -> Result<(), Str
                 schemas: updated_schemas,
             },
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e: Error| e.to_string())?;
 
     Ok(())
 }
@@ -1255,6 +1348,51 @@ pub async fn get_indexes(table_id: String) -> Result<Vec<db::Index>, String> {
     db::replace_indexes_for_table(&table_id, &indexes).map_err(|e| e.to_string())?;
 
     Ok(indexes)
+}
+
+#[command]
+pub async fn get_primary_key_columns(
+    server_id: String,
+    database_name: Option<String>,
+    schema_name: String,
+    table_name: String,
+) -> Result<Vec<String>, String> {
+    if schema_name.trim().is_empty() || table_name.trim().is_empty() {
+        return Ok(vec![]);
+    }
+
+    let server = db::get_server_by_id(&server_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Server not found")?;
+
+    let password = credentials::retrieve_password(&server.credential_key)
+        .map_err(|e| format!("Failed to retrieve password: {}", e))?;
+
+    let target_database = database_name
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| server.database.clone());
+
+    let pool = crate::postgres::get_or_create_pool(
+        &server.id,
+        &server.host,
+        server.port as u16,
+        &server.username,
+        &password,
+        &target_database,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let client = pool.get().await.map_err(|e| e.to_string())?;
+    let rows = client
+        .query(
+            "SELECT kcu.column_name\n             FROM information_schema.table_constraints tc\n             JOIN information_schema.key_column_usage kcu\n               ON tc.constraint_name = kcu.constraint_name\n              AND tc.table_schema = kcu.table_schema\n              AND tc.table_name = kcu.table_name\n             WHERE tc.constraint_type = 'PRIMARY KEY'\n               AND tc.table_schema = $1\n               AND tc.table_name = $2\n             ORDER BY kcu.ordinal_position",
+            &[&schema_name, &table_name],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
 }
 
 #[command]

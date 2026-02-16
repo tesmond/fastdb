@@ -15,6 +15,8 @@ export default defineConfig({
       "@mui/icons-material": path.resolve(__dirname, "node_modules/@mui/icons-material"),
       "@emotion/react": path.resolve(__dirname, "node_modules/@emotion/react"),
       "@emotion/styled": path.resolve(__dirname, "node_modules/@emotion/styled"),
+      "@tauri-apps/api": path.resolve(__dirname, "node_modules/@tauri-apps/api"),
+      "@tauri-apps/plugin-dialog": path.resolve(__dirname, "node_modules/@tauri-apps/plugin-dialog"),
     },
     dedupe: [
       "react",
@@ -60,6 +62,11 @@ export default defineConfig({
 
   // Optimize dependencies to avoid pre-bundling issues
   optimizeDeps: {
+    include: [
+      "@tauri-apps/api/core",
+      "@tauri-apps/api/event",
+      "@tauri-apps/plugin-dialog",
+    ],
     esbuildOptions: {
       loader: {
         ".js": "jsx",
@@ -84,7 +91,6 @@ export default defineConfig({
       ],
       exclude: [
         "src/App.js",
-        "src/App_optimized.js",
         "src/index.js",
         "src/components/LeftPanelFixed.js",
       ],

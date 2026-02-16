@@ -1,4 +1,5 @@
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime, PoolConfig};
+use deadpool::managed::QueueMode;
 use tokio_postgres::{NoTls, CancelToken};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,6 +12,10 @@ static POOLS: once_cell::sync::Lazy<Arc<Mutex<HashMap<String, Pool>>>> =
 static CANCEL_TOKENS: once_cell::sync::Lazy<Arc<Mutex<HashMap<String, CancelToken>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
+fn pool_key(server_id: &str, dbname: &str) -> String {
+    format!("{}::{}", server_id, dbname)
+}
+
 pub async fn get_or_create_pool(
     server_id: &str,
     host: &str,
@@ -20,8 +25,9 @@ pub async fn get_or_create_pool(
     dbname: &str,
 ) -> Result<Pool, Box<dyn std::error::Error>> {
     let mut pools = POOLS.lock().await;
+    let key = pool_key(server_id, dbname);
 
-    if let Some(pool) = pools.get(server_id) {
+    if let Some(pool) = pools.get(&key) {
         return Ok(pool.clone());
     }
 
@@ -37,10 +43,11 @@ pub async fn get_or_create_pool(
     cfg.pool = Some(PoolConfig {
         max_size: 10,
         timeouts: deadpool_postgres::Timeouts::default(),
+        queue_mode: QueueMode::Fifo,
     });
 
     let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)?;
-    pools.insert(server_id.to_string(), pool.clone());
+    pools.insert(key, pool.clone());
     Ok(pool)
 }
 
@@ -93,7 +100,7 @@ pub async fn execute_query(
     let pool = {
         let pools = POOLS.lock().await;
         pools
-            .get(server_id)
+            .get(&pool_key(server_id, dbname))
             .cloned()
             .ok_or("Pool not found for this server")?
     };
@@ -106,6 +113,8 @@ pub async fn execute_query(
 
     let trimmed = strip_leading_comments(sql).to_lowercase();
     let is_query = trimmed.starts_with("select") || trimmed.starts_with("with") || trimmed.starts_with("show") || trimmed.starts_with("explain");
+    let has_multiple_statements = sql.matches(';').count() > 1
+        || sql.trim_end_matches(';').contains(';');
 
     let result = if let Some(schema) = schema_name {
         let tx = client.transaction().await?;
@@ -116,6 +125,10 @@ pub async fn execute_query(
             let rows = tx.query(sql, &[]).await?;
             tx.commit().await?;
             QueryExecutionResult::Rows(rows)
+        } else if has_multiple_statements {
+            tx.batch_execute(sql).await?;
+            tx.commit().await?;
+            QueryExecutionResult::Affected(0)
         } else {
             let affected = tx.execute(sql, &[]).await?;
             tx.commit().await?;
@@ -124,6 +137,11 @@ pub async fn execute_query(
     } else if is_query {
         let rows = client.query(sql, &[]).await?;
         QueryExecutionResult::Rows(rows)
+    } else if has_multiple_statements {
+        let tx = client.transaction().await?;
+        tx.batch_execute(sql).await?;
+        tx.commit().await?;
+        QueryExecutionResult::Affected(0)
     } else {
         let affected = client.execute(sql, &[]).await?;
         QueryExecutionResult::Affected(affected)

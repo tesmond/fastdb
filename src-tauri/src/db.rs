@@ -665,6 +665,17 @@ pub fn add_query_history(history: &QueryHistory) -> Result<(), rusqlite::Error> 
         history.success
     ])?;
 
+    // Enforce 10,000 entry limit per server — delete oldest
+    conn.execute(
+        "DELETE FROM query_history WHERE id IN (
+            SELECT id FROM query_history
+            WHERE server_id = ?
+            ORDER BY executed_at DESC
+            LIMIT -1 OFFSET 10000
+        )",
+        params![history.server_id],
+    )?;
+
     Ok(())
 }
 
@@ -715,6 +726,17 @@ pub fn upsert_query_history_dedup(
              VALUES (?, ?, ?, ?, ?, 1)"
         )?;
         stmt.execute(params![id, server_id, sql, &normalized, executed_at])?;
+
+        // Enforce 10,000 entry limit per server — delete oldest
+        conn.execute(
+            "DELETE FROM query_history_dedup WHERE id IN (
+                SELECT id FROM query_history_dedup
+                WHERE server_id = ?
+                ORDER BY last_executed_at DESC
+                LIMIT -1 OFFSET 10000
+            )",
+            params![server_id],
+        )?;
     }
 
     Ok(())
