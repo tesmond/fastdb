@@ -15,6 +15,8 @@ export default defineConfig({
       "@mui/icons-material": path.resolve(__dirname, "node_modules/@mui/icons-material"),
       "@emotion/react": path.resolve(__dirname, "node_modules/@emotion/react"),
       "@emotion/styled": path.resolve(__dirname, "node_modules/@emotion/styled"),
+      "@tauri-apps/api": path.resolve(__dirname, "node_modules/@tauri-apps/api"),
+      "@tauri-apps/plugin-dialog": path.resolve(__dirname, "node_modules/@tauri-apps/plugin-dialog"),
     },
     dedupe: [
       "react",
