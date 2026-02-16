@@ -60,6 +60,11 @@ export default defineConfig({
 
   // Optimize dependencies to avoid pre-bundling issues
   optimizeDeps: {
+    include: [
+      "@tauri-apps/api/core",
+      "@tauri-apps/api/event",
+      "@tauri-apps/plugin-dialog",
+    ],
     esbuildOptions: {
       loader: {
         ".js": "jsx",

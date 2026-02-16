@@ -22,8 +22,8 @@ import {
   Visibility,
   ListAlt,
 } from "@mui/icons-material";
-import { invoke } from "@tauri-apps/api/tauri";
-import { open } from "@tauri-apps/api/dialog";
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
 function LeftPanelFixed({
   servers,
@@ -337,6 +337,22 @@ function LeftPanelFixed({
       }
       return newSet;
     });
+
+    if (!wasExpanded && !columns[table.id]) {
+      setLoadingColumns((prev) => new Set(prev).add(table.id));
+      try {
+        const columnList = await invoke("get_columns", { tableId: table.id });
+        setColumns((prev) => ({ ...prev, [table.id]: columnList }));
+      } catch (error) {
+        console.error("Failed to load columns:", error);
+      } finally {
+        setLoadingColumns((prev) => {
+          const newSet = new Set(prev);
+          newSet.delete(table.id);
+          return newSet;
+        });
+      }
+    }
 
     if (!wasExpanded && !indexes[table.id]) {
       setLoadingIndexes((prev) => new Set(prev).add(table.id));

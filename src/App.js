@@ -11,7 +11,7 @@ import {
   TextField,
   Button,
 } from "@mui/material";
-import { invoke } from "@tauri-apps/api/tauri";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import LeftPanelFixed from "./components/LeftPanelFixed";
 import RightPanel from "./components/RightPanel";
@@ -38,10 +38,12 @@ function App() {
     // Listen for schema updates
     const unlistenSchema = listen("schema_updated", (event) => {
       setSchemas(event.payload.schemas);
+    }).catch((err) => {
+      console.warn("Failed to listen for schema_updated:", err);
     });
 
     return () => {
-      unlistenSchema.then((fn) => fn());
+      unlistenSchema.then((fn) => fn && fn()).catch(() => {});
     };
   }, []);
 

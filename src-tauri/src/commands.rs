@@ -1,4 +1,4 @@
-use tauri::{command, Window};
+use tauri::{command, Window, Emitter, Error};
 use crate::db::{self, QueryHistory, QueryHistoryEntry};
 use crate::credentials;
 use serde::{Deserialize, Serialize};
@@ -362,7 +362,7 @@ pub async fn execute_query(
                         schemas: updated_schemas,
                     },
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e: Error| e.to_string())?;
         }
     }
 
@@ -1263,7 +1263,7 @@ pub async fn refresh_schema(window: Window, server_id: String) -> Result<(), Str
                 schemas: updated_schemas,
             },
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e: Error| e.to_string())?;
 
     Ok(())
 }
@@ -1348,6 +1348,51 @@ pub async fn get_indexes(table_id: String) -> Result<Vec<db::Index>, String> {
     db::replace_indexes_for_table(&table_id, &indexes).map_err(|e| e.to_string())?;
 
     Ok(indexes)
+}
+
+#[command]
+pub async fn get_primary_key_columns(
+    server_id: String,
+    database_name: Option<String>,
+    schema_name: String,
+    table_name: String,
+) -> Result<Vec<String>, String> {
+    if schema_name.trim().is_empty() || table_name.trim().is_empty() {
+        return Ok(vec![]);
+    }
+
+    let server = db::get_server_by_id(&server_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Server not found")?;
+
+    let password = credentials::retrieve_password(&server.credential_key)
+        .map_err(|e| format!("Failed to retrieve password: {}", e))?;
+
+    let target_database = database_name
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| server.database.clone());
+
+    let pool = crate::postgres::get_or_create_pool(
+        &server.id,
+        &server.host,
+        server.port as u16,
+        &server.username,
+        &password,
+        &target_database,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let client = pool.get().await.map_err(|e| e.to_string())?;
+    let rows = client
+        .query(
+            "SELECT kcu.column_name\n             FROM information_schema.table_constraints tc\n             JOIN information_schema.key_column_usage kcu\n               ON tc.constraint_name = kcu.constraint_name\n              AND tc.table_schema = kcu.table_schema\n              AND tc.table_name = kcu.table_name\n             WHERE tc.constraint_type = 'PRIMARY KEY'\n               AND tc.table_schema = $1\n               AND tc.table_name = $2\n             ORDER BY kcu.ordinal_position",
+            &[&schema_name, &table_name],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
 }
 
 #[command]

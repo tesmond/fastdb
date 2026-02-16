@@ -23,9 +23,9 @@ import {
   TableRow,
 } from "@mui/material";
 import { Add, Close } from "@mui/icons-material";
-import { invoke } from "@tauri-apps/api/tauri";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { save } from "@tauri-apps/api/dialog";
+import { save } from "@tauri-apps/plugin-dialog";
 import QueryEditor from "./QueryEditor";
 import ResultViewer from "./ResultViewer";
 import QueryHistory from "./QueryHistory";
@@ -75,11 +75,13 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
       if (event?.payload?.serverId === selectedServer?.id) {
         loadAutocomplete(selectedServer.id);
       }
+    }).catch((err) => {
+      console.warn("Failed to listen for schema_updated:", err);
     });
 
     return () => {
       if (unlistenPromise) {
-        unlistenPromise.then((fn) => fn());
+        unlistenPromise.then((fn) => fn && fn()).catch(() => {});
       }
     };
   }, [selectedServer]);
@@ -581,6 +583,44 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     setActiveTab(newValue);
   }, []);
 
+  const stripSqlIdentifier = useCallback((value) => {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      return trimmed.slice(1, -1).replace(/""/g, '"');
+    }
+    return trimmed;
+  }, []);
+
+  const parseEditableTableInfo = useCallback(
+    (sql, fallbackSchemaName) => {
+      if (!sql) return null;
+      const normalized = sql.replace(/\s+/g, ' ').trim();
+      const hasJoin = /\bjoin\b/i.test(normalized);
+      if (hasJoin) return null;
+
+      const fromMatch = normalized.match(
+        /\bfrom\s+((?:"[^"]+"|[A-Za-z0-9_]+)(?:\s*\.\s*(?:"[^"]+"|[A-Za-z0-9_]+))?)/i,
+      );
+      if (!fromMatch) return null;
+
+      const rawRef = fromMatch[1];
+      if (rawRef.includes(',')) return null;
+
+      const parts = rawRef.split('.').map((part) => stripSqlIdentifier(part));
+      if (parts.length === 1) {
+        if (!fallbackSchemaName) return null;
+        return { schemaName: fallbackSchemaName, tableName: parts[0] };
+      }
+
+      if (parts.length === 2) {
+        return { schemaName: parts[0], tableName: parts[1] };
+      }
+
+      return null;
+    },
+    [stripSqlIdentifier],
+  );
+
   // Execute query for a tab
   const handleExecute = useCallback(
     async (sql) => {
@@ -620,6 +660,29 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
 
         const executionTime = Date.now() - startTime;
 
+        let editableInfo = null;
+        if (result?.rows?.length && result?.columns?.length) {
+          const tableInfo = parseEditableTableInfo(sql, currentTab.schemaName);
+          if (tableInfo?.schemaName && tableInfo?.tableName) {
+            try {
+              const primaryKeyColumns = await invoke("get_primary_key_columns", {
+                serverId: currentTab.serverId,
+                databaseName: currentTab.databaseName || null,
+                schemaName: tableInfo.schemaName,
+                tableName: tableInfo.tableName,
+              });
+
+              editableInfo = {
+                ...tableInfo,
+                databaseName: currentTab.databaseName || null,
+                primaryKeyColumns: primaryKeyColumns || [],
+              };
+            } catch (pkError) {
+              console.error("Failed to load primary key info:", pkError);
+            }
+          }
+        }
+
         // Update tab with results
         setTabs((prev) =>
           prev.map((tab, index) =>
@@ -634,6 +697,7 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   queryId: null,
                   executionTime,
                   rowsAffected: result?.rowsAffected || null,
+                  editableInfo,
                 }
               : tab,
           ),
@@ -664,13 +728,14 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   isCancelling: false,
                   queryId: null,
                   executionTime,
+                  editableInfo: null,
                 }
               : tab,
           ),
         );
       }
     },
-    [tabs, activeTab, onSchemaRefresh],
+    [tabs, activeTab, onSchemaRefresh, parseEditableTableInfo],
   );
 
   const handleCancel = useCallback(async () => {
@@ -694,11 +759,87 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
     }
   }, [tabs, activeTab]);
 
+  const quoteSqlIdentifier = useCallback((value) => {
+    return `"${String(value).replace(/"/g, '""')}"`;
+  }, []);
+
+  const formatSqlLiteral = useCallback((value, originalValue) => {
+    if (value === null || value === undefined) return "NULL";
+
+    const raw = String(value);
+    if (raw.trim().toLowerCase() === "null") return "NULL";
+
+    if (typeof originalValue === "number") {
+      const numeric = Number(raw);
+      if (!Number.isNaN(numeric)) return String(numeric);
+    }
+
+    if (typeof originalValue === "boolean") {
+      const lowered = raw.trim().toLowerCase();
+      if (lowered === "true" || lowered === "false") return lowered;
+    }
+
+    const escaped = raw.replace(/'/g, "''");
+    return `'${escaped}'`;
+  }, []);
+
+  const handleSaveEdits = useCallback(
+    async ({ tableName, schemaName, databaseName, primaryKeyColumns, updates }) => {
+      const active = tabs[activeTab];
+      if (!active?.serverId) return;
+      if (!tableName || !schemaName || !primaryKeyColumns?.length) return;
+
+      const qualifiedTable = `${quoteSqlIdentifier(schemaName)}.${quoteSqlIdentifier(tableName)}`;
+      const statements = updates
+        .map(({ row, changes }) => {
+          const setClauses = Object.entries(changes).map(
+            ([columnName, value]) =>
+              `${quoteSqlIdentifier(columnName)} = ${formatSqlLiteral(
+                value,
+                row?.[columnName],
+              )}`,
+          );
+
+          const whereClauses = primaryKeyColumns
+            .map((pkName) => {
+              const pkValue = row?.[pkName];
+              if (pkValue === null || pkValue === undefined) {
+                return `${quoteSqlIdentifier(pkName)} IS NULL`;
+              }
+              return `${quoteSqlIdentifier(pkName)} = ${formatSqlLiteral(
+                pkValue,
+                pkValue,
+              )}`;
+            })
+            .filter(Boolean);
+
+          if (!setClauses.length || !whereClauses.length) return null;
+          return `UPDATE ${qualifiedTable} SET ${setClauses.join(", ")} WHERE ${whereClauses.join(" AND ")}`;
+        })
+        .filter(Boolean);
+
+      if (!statements.length) return;
+
+      const sql = `${statements.join(";\n")};`;
+
+      await invoke("execute_query", {
+        serverId: active.serverId,
+        sql,
+        queryId: `${active.id}-edit-${Date.now()}`,
+        schemaName: schemaName || null,
+        databaseName: databaseName || active.databaseName || null,
+      });
+    },
+    [activeTab, formatSqlLiteral, quoteSqlIdentifier, tabs],
+  );
+
   // Clear results for current tab
   const handleClear = useCallback(() => {
     setTabs((prev) =>
       prev.map((tab, index) =>
-        index === activeTab ? { ...tab, results: null, error: null } : tab,
+        index === activeTab
+          ? { ...tab, results: null, error: null, editableInfo: null }
+          : tab,
       ),
     );
   }, [activeTab]);
@@ -1194,6 +1335,10 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   isLoading={currentTab.isExecuting}
                   executionTime={currentTab.executionTime}
                   rowsAffected={currentTab.rowsAffected}
+                  editableInfo={currentTab.editableInfo || null}
+                  onSaveEdits={
+                    currentTab.type === "query" ? handleSaveEdits : undefined
+                  }
                 />
               </Box>
             </>
@@ -1303,6 +1448,10 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   isLoading={currentTab.isExecuting}
                   executionTime={currentTab.executionTime}
                   rowsAffected={currentTab.rowsAffected}
+                  editableInfo={currentTab.editableInfo || null}
+                  onSaveEdits={
+                    currentTab.type === "query" ? handleSaveEdits : undefined
+                  }
                 />
               </Box>
             </>
@@ -1405,6 +1554,10 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   isLoading={currentTab.isExecuting}
                   executionTime={currentTab.executionTime}
                   rowsAffected={currentTab.rowsAffected}
+                  editableInfo={currentTab.editableInfo || null}
+                  onSaveEdits={
+                    currentTab.type === "query" ? handleSaveEdits : undefined
+                  }
                 />
               </Box>
             </>
@@ -1454,6 +1607,10 @@ const RightPanel = memo(({ selectedServer, onSchemaRefresh }) => {
                   isLoading={currentTab.isExecuting}
                   executionTime={currentTab.executionTime}
                   rowsAffected={currentTab.rowsAffected}
+                  editableInfo={currentTab.editableInfo || null}
+                  onSaveEdits={
+                    currentTab.type === "query" ? handleSaveEdits : undefined
+                  }
                 />
               </Box>
             </>

@@ -26,8 +26,101 @@ import {
   ContentCopy,
   CheckCircle,
   Error as ErrorIcon,
+  Edit,
+  Save,
+  Undo,
+  VpnKey,
 } from "@mui/icons-material";
 import { FixedSizeList } from "react-window";
+
+// Standalone cell editor — manages its own local state so keystrokes
+// don't recreate the virtualised Row and reset the cursor.
+// Handles its own commit-on-click-outside via onBlur.
+const CellEditor = memo(({ initialValue, placeholder, onCommit, onCancel }) => {
+  const [value, setValue] = useState(initialValue);
+  const inputRef = useRef(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const containerRef = useRef(null);
+  // Guard against double-commit (blur can fire after Enter/Escape)
+  const committedRef = useRef(false);
+
+  useEffect(() => {
+    committedRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.focus();
+      const len = inputRef.current.value.length;
+      inputRef.current.setSelectionRange(len, len);
+    }
+  }, []);
+
+  const doCommit = useCallback(() => {
+    if (committedRef.current) return;
+    committedRef.current = true;
+    onCommit(valueRef.current);
+  }, [onCommit]);
+
+  const doCancel = useCallback(() => {
+    if (committedRef.current) return;
+    committedRef.current = true;
+    onCancel();
+  }, [onCancel]);
+
+  const handleKeyDown = useCallback(
+    (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        doCommit();
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        doCancel();
+      }
+    },
+    [doCommit, doCancel],
+  );
+
+  const handleBlur = useCallback(
+    (event) => {
+      // If focus moves to another element inside this container, don't commit
+      if (
+        containerRef.current &&
+        event.relatedTarget &&
+        containerRef.current.contains(event.relatedTarget)
+      ) {
+        return;
+      }
+      doCommit();
+    },
+    [doCommit],
+  );
+
+  return (
+    <Box ref={containerRef} sx={{ flex: 1, mr: 1 }}>
+      <TextField
+        size="small"
+        multiline
+        maxRows={6}
+        inputRef={inputRef}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onBlur={handleBlur}
+        placeholder={placeholder}
+        variant="standard"
+        InputProps={{
+          disableUnderline: true,
+          sx: { fontSize: "0.875rem" },
+        }}
+        sx={{ width: "100%" }}
+      />
+    </Box>
+  );
+});
+CellEditor.displayName = "CellEditor";
 
 const ResultViewer = memo(
   ({
@@ -36,14 +129,21 @@ const ResultViewer = memo(
     isLoading = false,
     executionTime = null,
     rowsAffected = null,
+    editableInfo = null,
+    onSaveEdits,
   }) => {
     const [searchTerm, setSearchTerm] = useState("");
     const [filterAnchor, setFilterAnchor] = useState(null);
     // track copied and hovered cells by key to avoid matching by value (null/undefined)
     const [copiedKey, setCopiedKey] = useState(null);
+    const [editingCell, setEditingCell] = useState(null);
+    const [pendingEdits, setPendingEdits] = useState({});
+    const [isSavingEdits, setIsSavingEdits] = useState(false);
+    const [saveError, setSaveError] = useState(null);
+    const [baseRows, setBaseRows] = useState([]);
 
     // Parse results
-    const { columns, rows } = useMemo(() => {
+    const { columns, rows: rawRows } = useMemo(() => {
       if (!results || !results.columns || !results.rows) {
         return { columns: [], rows: [] };
       }
@@ -53,6 +153,11 @@ const ResultViewer = memo(
       };
     }, [results]);
 
+    // Keep baseRows in sync with rawRows from new query results
+    useEffect(() => {
+      setBaseRows(rawRows);
+    }, [rawRows]);
+
     const message = useMemo(() => {
       if (!results || !results.message) return null;
       return results.message;
@@ -60,20 +165,58 @@ const ResultViewer = memo(
 
     const shouldShowRowsAffected = useMemo(() => {
       if (rowsAffected === null || rowsAffected === undefined) return false;
-      return rows.length === 0;
-    }, [rowsAffected, rows.length]);
+      return baseRows.length === 0;
+    }, [rowsAffected, baseRows.length]);
+
+    const primaryKeyColumns = useMemo(() => {
+      return editableInfo?.primaryKeyColumns || [];
+    }, [editableInfo]);
+
+    const hasPrimaryKey = useMemo(() => {
+      if (!primaryKeyColumns.length) return false;
+      const columnNames = new Set(columns.map((col) => col.name));
+      return primaryKeyColumns.every((name) => columnNames.has(name));
+    }, [columns, primaryKeyColumns]);
+
+    const canEdit = Boolean(
+      editableInfo?.tableName &&
+        editableInfo?.schemaName &&
+        hasPrimaryKey &&
+        typeof onSaveEdits === "function",
+    );
+
+    const getRowKey = useCallback(
+      (row) => {
+        if (!canEdit) return null;
+        const values = primaryKeyColumns.map((name) => row?.[name]);
+        return JSON.stringify(values);
+      },
+      [canEdit, primaryKeyColumns],
+    );
+
+    const rowKeyMap = useMemo(() => {
+      if (!canEdit) return {};
+      const map = {};
+      baseRows.forEach((row) => {
+        const key = getRowKey(row);
+        if (key !== null) {
+          map[key] = row;
+        }
+      });
+      return map;
+    }, [baseRows, canEdit, getRowKey]);
 
     // Filter rows based on search term
     const filteredRows = useMemo(() => {
-      if (!searchTerm.trim()) return rows;
+      if (!searchTerm.trim()) return baseRows;
 
       const term = searchTerm.toLowerCase();
-      return rows.filter((row) =>
+      return baseRows.filter((row) =>
         Object.values(row).some((value) =>
           String(value).toLowerCase().includes(term),
         ),
       );
-    }, [rows, searchTerm]);
+    }, [baseRows, searchTerm]);
 
     const handleCopyCell = useCallback((key, value) => {
       try {
@@ -85,13 +228,153 @@ const ResultViewer = memo(
       setTimeout(() => setCopiedKey(null), 2000);
     }, []);
 
+    const normalizeValue = useCallback((value) => {
+      if (value === null || value === undefined) return "";
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    }, []);
+
+    const getPendingValue = useCallback(
+      (rowKey, columnName) => {
+        const rowEdits = pendingEdits[rowKey];
+        if (!rowEdits) return undefined;
+        return rowEdits[columnName];
+      },
+      [pendingEdits],
+    );
+
+    const isCellEdited = useCallback(
+      (row, rowKey, columnName) => {
+        if (!rowKey) return false;
+        const pendingValue = getPendingValue(rowKey, columnName);
+        if (pendingValue === undefined) return false;
+        const baseValue = normalizeValue(row?.[columnName]);
+        return pendingValue !== baseValue;
+      },
+      [getPendingValue, normalizeValue],
+    );
+
+    const handleEditStart = useCallback(
+      (rowKey, columnName, row) => {
+        if (!canEdit || !rowKey) return;
+        const pending = pendingEdits[rowKey]?.[columnName];
+        const initial = pending !== undefined ? pending : normalizeValue(row?.[columnName]);
+        setEditingCell({ rowKey, columnName, initialValue: initial });
+      },
+      [canEdit, normalizeValue, pendingEdits],
+    );
+
+    const applyEditValue = useCallback(
+      (rowKey, columnName, value, row) => {
+        if (!rowKey) return;
+        const normalized = normalizeValue(row?.[columnName]);
+        setPendingEdits((prev) => {
+          const next = { ...prev };
+          const nextRow = { ...(next[rowKey] || {}) };
+          if (value === normalized) {
+            delete nextRow[columnName];
+          } else {
+            nextRow[columnName] = value;
+          }
+
+          if (Object.keys(nextRow).length === 0) {
+            delete next[rowKey];
+          } else {
+            next[rowKey] = nextRow;
+          }
+
+          return next;
+        });
+      },
+      [normalizeValue],
+    );
+
+    const commitEdit = useCallback(
+      (rowKey, columnName, value, row) => {
+        applyEditValue(rowKey, columnName, value, row);
+        setEditingCell(null);
+      },
+      [applyEditValue],
+    );
+
+    const cancelEdit = useCallback(
+      (rowKey, columnName, row) => {
+        applyEditValue(rowKey, columnName, normalizeValue(row?.[columnName]), row);
+        setEditingCell(null);
+      },
+      [applyEditValue, normalizeValue],
+    );
+
+    const hasEdits = useMemo(() => Object.keys(pendingEdits).length > 0, [pendingEdits]);
+
+    const handleRevertEdits = useCallback(() => {
+      setPendingEdits({});
+      setEditingCell(null);
+      setSaveError(null);
+    }, []);
+
+    const handleSaveEdits = useCallback(async () => {
+      if (!hasEdits || !canEdit) return;
+      const updates = Object.entries(pendingEdits)
+        .map(([rowKey, changes]) => ({
+          rowKey,
+          row: rowKeyMap[rowKey],
+          changes,
+        }))
+        .filter((entry) => entry.row && Object.keys(entry.changes || {}).length > 0);
+
+      if (!updates.length) {
+        handleRevertEdits();
+        return;
+      }
+
+      setIsSavingEdits(true);
+      setSaveError(null);
+
+      try {
+        await onSaveEdits({
+          tableName: editableInfo?.tableName,
+          schemaName: editableInfo?.schemaName,
+          databaseName: editableInfo?.databaseName || null,
+          primaryKeyColumns,
+          updates,
+        });
+
+        setBaseRows((prevRows) =>
+          prevRows.map((row) => {
+            const rowKey = getRowKey(row);
+            const changes = rowKey ? pendingEdits[rowKey] : null;
+            if (!changes) return row;
+            return { ...row, ...changes };
+          }),
+        );
+
+        setPendingEdits({});
+        setEditingCell(null);
+      } catch (saveErr) {
+        setSaveError(saveErr?.message || saveErr?.toString?.() || "Failed to save changes.");
+      } finally {
+        setIsSavingEdits(false);
+      }
+    }, [
+      canEdit,
+      editableInfo,
+      getRowKey,
+      handleRevertEdits,
+      hasEdits,
+      onSaveEdits,
+      pendingEdits,
+      primaryKeyColumns,
+      rowKeyMap,
+    ]);
+
     const handleExport = useCallback(() => {
-      if (!columns.length || !rows.length) return;
+      if (!columns.length || !baseRows.length) return;
 
       // Generate CSV
       const csvContent = [
         columns.map((col) => `"${col.name}"`).join(","),
-        ...rows.map((row) =>
+        ...baseRows.map((row) =>
           columns
             .map((col) => {
               const value = row[col.name];
@@ -113,7 +396,7 @@ const ResultViewer = memo(
       a.download = `query_results_${Date.now()}.csv`;
       a.click();
       URL.revokeObjectURL(url);
-    }, [columns, rows]);
+    }, [columns, baseRows]);
 
     const handleFilterClick = useCallback((event) => {
       setFilterAnchor(event.currentTarget);
@@ -156,6 +439,7 @@ const ResultViewer = memo(
     const Row = useCallback(
       ({ index, style }) => {
         const row = filteredRows[index];
+        const rowKey = canEdit ? getRowKey(row) : null;
         return (
           <Box
             style={style}
@@ -165,6 +449,10 @@ const ResultViewer = memo(
               borderColor: "divider",
               "&:hover": {
                 backgroundColor: "action.hover",
+              },
+              "&:hover .row-actions": {
+                opacity: 1,
+                pointerEvents: "auto",
               },
             }}
           >
@@ -190,6 +478,17 @@ const ResultViewer = memo(
             {/* Data cells */}
             {columns.map((col, colIndex) => {
               const cellKey = `${index}-${colIndex}`;
+              const pendingValue = rowKey ? getPendingValue(rowKey, col.name) : undefined;
+              const baseValue = row?.[col.name];
+              const displayValue =
+                pendingValue !== undefined ? pendingValue : baseValue;
+              const isEdited = rowKey
+                ? isCellEdited(row, rowKey, col.name)
+                : false;
+              const isEditing =
+                editingCell?.rowKey === rowKey &&
+                editingCell?.columnName === col.name;
+              const canEditCell = canEdit && rowKey;
               return (
               <Box
                 key={cellKey}
@@ -205,38 +504,89 @@ const ResultViewer = memo(
                   borderColor: "divider",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
+                  whiteSpace: isEditing ? "pre-wrap" : "nowrap",
                   position: "relative",
-                  "&:hover .copyIcon": { opacity: 1 },
                 }}
-                onClick={() => handleCopyCell(cellKey, row[col.name])}
-                title={`Click to copy: ${row[col.name]}`}
+                title={`Value: ${displayValue}`}
               >
-                <Typography
-                  variant="body2"
+                {isEditing ? (
+                  <CellEditor
+                    initialValue={editingCell.initialValue}
+                    placeholder={baseValue === null ? "NULL" : ""}
+                    onCommit={(val) => commitEdit(rowKey, col.name, val, row)}
+                    onCancel={() => cancelEdit(rowKey, col.name, row)}
+                  />
+                ) : (
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      cursor: "default",
+                      fontWeight: isEdited ? 700 : 400,
+                    }}
+                  >
+                    {formatCellValue(displayValue)}
+                  </Typography>
+                )}
+
+                <Box
+                  className="row-actions"
                   sx={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 0.5,
+                    ml: 1,
+                    opacity: 0,
+                    transition: "opacity 0.12s",
+                    pointerEvents: "none",
                   }}
                 >
-                  {formatCellValue(row[col.name])}
-                </Typography>
-                <ContentCopy
-                  className="copyIcon"
-                  sx={{ ml: 1, fontSize: 16, color: "text.secondary", opacity: 0, transition: "opacity 0.12s", pointerEvents: "none" }}
-                  style={copiedKey === cellKey ? { display: "none" } : {}}
-                />
-                {copiedKey === cellKey && (
-                  <CheckCircle sx={{ ml: 1, fontSize: 16, color: "success.main" }} />
-                )}
+                  {canEditCell && (
+                    <Tooltip title="Edit">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleEditStart(rowKey, col.name, row)}
+                      >
+                        <Edit fontSize="inherit" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                  <Tooltip title="Copy">
+                    <IconButton
+                      size="small"
+                      onClick={() => handleCopyCell(cellKey, displayValue)}
+                    >
+                      {copiedKey === cellKey ? (
+                        <CheckCircle fontSize="inherit" sx={{ color: "success.main" }} />
+                      ) : (
+                        <ContentCopy fontSize="inherit" />
+                      )}
+                    </IconButton>
+                  </Tooltip>
+                </Box>
               </Box>
               );
             })}
           </Box>
         );
       },
-      [filteredRows, columns, copiedKey, handleCopyCell, formatCellValue],
+      [
+        filteredRows,
+        columns,
+        copiedKey,
+        editingCell,
+        canEdit,
+        applyEditValue,
+        cancelEdit,
+        getPendingValue,
+        getRowKey,
+        handleCopyCell,
+        handleEditStart,
+        isCellEdited,
+        normalizeValue,
+        formatCellValue,
+      ],
     );
 
     // Loading state
@@ -321,7 +671,7 @@ const ResultViewer = memo(
       );
     }
 
-    if (message && rows.length === 0) {
+    if (message && baseRows.length === 0) {
       return (
         <Box sx={{ p: 2 }}>
           <Alert severity="success" icon={<CheckCircle />}>
@@ -438,17 +788,48 @@ const ResultViewer = memo(
                 variant="outlined"
               />
             )}
-            {searchTerm && filteredRows.length < rows.length && (
+            {searchTerm && filteredRows.length < baseRows.length && (
               <Chip
-                label={`Filtered from ${rows.length}`}
+                label={`Filtered from ${baseRows.length}`}
                 size="small"
                 color="warning"
                 variant="outlined"
               />
             )}
+            {saveError && (
+              <Typography variant="caption" color="error">
+                {saveError}
+              </Typography>
+            )}
           </Box>
 
           <Box sx={{ display: "flex", gap: 0.5, alignItems: "center" }}>
+            {canEdit && hasEdits && (
+              <>
+                <Tooltip title="Save changes">
+                  <span>
+                    <IconButton
+                      size="small"
+                      onClick={handleSaveEdits}
+                      disabled={isSavingEdits}
+                    >
+                      <Save />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip title="Revert changes">
+                  <span>
+                    <IconButton
+                      size="small"
+                      onClick={handleRevertEdits}
+                      disabled={isSavingEdits}
+                    >
+                      <Undo />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </>
+            )}
             {/* Search */}
             <TextField
               size="small"
@@ -519,7 +900,9 @@ const ResultViewer = memo(
               </Box>
 
               {/* Column headers */}
-              {columns.map((col, index) => (
+              {columns.map((col, index) => {
+                const isPrimaryKey = primaryKeyColumns.includes(col.name);
+                return (
                 <Box
                   key={index}
                   sx={{
@@ -534,6 +917,11 @@ const ResultViewer = memo(
                     borderColor: "divider",
                   }}
                 >
+                  {isPrimaryKey && (
+                    <Tooltip title={`Primary key: ${primaryKeyColumns.join(", ")}`}>
+                      <VpnKey sx={{ fontSize: 16, mr: 0.5, color: "warning.main" }} />
+                    </Tooltip>
+                  )}
                   <Tooltip title={col.type || "unknown type"}>
                     <Typography
                       variant="body2"
@@ -548,7 +936,8 @@ const ResultViewer = memo(
                     </Typography>
                   </Tooltip>
                 </Box>
-              ))}
+                );
+              })}
             </Box>
 
             {/* Virtualized Table Body */}

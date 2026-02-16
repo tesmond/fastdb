@@ -28,7 +28,12 @@ FastDB is a desktop application built with Tauri and React that provides a moder
 
 ## 📸 Screenshots
 
-![UI Example](assets/screenshot_1.png)
+### Dashboard
+![Dashboard Example](assets/screenshot_1.png)
+
+### Editing Column
+![Edit Column Example](assets/screenshot_2.png)
+
 
 ## 🚀 Quick Start
 
@@ -59,7 +64,7 @@ npm run tauri dev
 npm run tauri build
 
 # Find executable in:
-# src-tauri/target/release/fastdb.exe
+# src-tauri\target\release\fastdb.exe
 ```
 
 ## 📖 Usage
@@ -115,6 +120,7 @@ npm run tauri build
 ## 🛣️ Roadmap
 
 ### Phase 5 (Management)
+- [x] Edit columns with primary ID
 - [ ] Server management UI (add/edit/delete)
 - [ ] Saved queries with folders
 - [ ] Advanced filtering (type-specific)

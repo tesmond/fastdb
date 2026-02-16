@@ -20,7 +20,7 @@ import {
   Delete,
   History as HistoryIcon,
 } from '@mui/icons-material';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 
 /**
  * Format a timestamp as a relative time string (e.g., "2 minutes ago", "Yesterday")
